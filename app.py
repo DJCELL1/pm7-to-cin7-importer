@@ -4,13 +4,14 @@ import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
 import re
+import os
 import json
 
 # ---------------------------------------------
 # 🔧 PAGE CONFIG
 # ---------------------------------------------
 st.set_page_config(page_title="ProMaster → Cin7 Importer", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v23 – GST Tax Rate Fix")
+st.title("🧱 ProMaster → Cin7 Importer v24 – Default Product & Substitute Loader")
 
 # ---------------------------------------------
 # 🔑 CACHED CIN7 LOOKUPS
@@ -61,6 +62,23 @@ branch_avondale = cin7.get("branch_avondale", 1)
 
 st.success("🔐 Cin7 API credentials loaded")
 
+# ---------------------------------------------
+# Load default reference files if present
+# ---------------------------------------------
+default_products = "Products.csv"
+default_subs = "Substitutes.xlsx"
+
+if "products" not in st.session_state and os.path.exists(default_products):
+    st.session_state["products"] = pd.read_csv(default_products)
+    st.info(f"📂 Loaded default Products.csv ({len(st.session_state['products'])} rows)")
+
+if "subs" not in st.session_state and os.path.exists(default_subs):
+    st.session_state["subs"] = pd.read_excel(default_subs)
+    st.info(f"📂 Loaded default Substitutes.xlsx ({len(st.session_state['subs'])} rows)")
+
+# ---------------------------------------------
+# Fetch Cin7 users once
+# ---------------------------------------------
 users_map = get_users_map(api_username, api_key, base_url)
 if users_map:
     st.info(f"👥 Loaded {len(users_map)} active Cin7 users.")
@@ -70,15 +88,18 @@ else:
 # ---------------------------------------------
 # Hidden reference uploads
 # ---------------------------------------------
-with st.expander("⚙️ Upload Hidden Reference Files", expanded=False):
+with st.expander("⚙️ Upload / Replace Reference Files", expanded=False):
+    st.caption("These will override the default repo versions for this session.")
+
     prod = st.file_uploader("Upload Cin7 Products.csv", type=["csv"])
     if prod:
         st.session_state["products"] = pd.read_csv(prod)
-        st.success(f"✅ Loaded {len(st.session_state['products'])} products.")
+        st.success(f"✅ Loaded {len(st.session_state['products'])} products (session).")
+
     subs = st.file_uploader("Upload Substitutes.xlsx", type=["xlsx"])
     if subs:
         st.session_state["subs"] = pd.read_excel(subs)
-        st.success(f"✅ Loaded {len(st.session_state['subs'])} substitutions.")
+        st.success(f"✅ Loaded {len(st.session_state['subs'])} substitutions (session).")
 
 # ---------------------------------------------
 # Upload ProMaster files
@@ -88,7 +109,7 @@ pm_files = st.file_uploader("Upload ProMaster Export file(s)", type=["csv"], acc
 
 if pm_files:
     if "products" not in st.session_state:
-        st.warning("⚠️ Upload Cin7 Products file first.")
+        st.warning("⚠️ Products data not loaded. Please check Products.csv exists or upload again.")
     else:
         prods = st.session_state["products"]
         comments = {}
@@ -146,7 +167,7 @@ if pm_files:
                 "Product Name": m["Description"],
                 "Item Qty": m["ProductQuantity"],
                 "Item Price": m["ProductPrice"],
-                # ✅ auto-fill Price Tier
+                # ✅ Auto-fill Price Tier
                 "Price Tier": "Trade (NZD - Excl)"
             })
             all_out.append(out)
@@ -200,7 +221,7 @@ if pm_files:
                         "estimatedDeliveryDate": f"{etd}T00:00:00Z",
                         "currencyCode": "NZD",
                         "taxStatus": "Incl",
-                        "taxRate": 15.0,   # ✅ Added GST rate
+                        "taxRate": 15.0,   # ✅ GST rate fix
                         "stage": "New",
                         "priceTier": "Trade (NZD - Excl)",
                         "lineItems": lines
