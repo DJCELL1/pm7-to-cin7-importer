@@ -11,7 +11,7 @@ import os
 # 🔧 PAGE CONFIG
 # ---------------------------------------------
 st.set_page_config(page_title="ProMaster → Cin7 Importer", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v25 – Permanent Repo Files")
+st.title("🧱 ProMaster → Cin7 Importer v26 – Repo Defaults + Substitutions Restored")
 
 # ---------------------------------------------
 # 🗝️ CIN7 SECRETS
@@ -40,6 +40,9 @@ if not os.path.exists(subs_path):
 
 products = pd.read_csv(products_path)
 subs = pd.read_excel(subs_path)
+subs.columns = [c.strip() for c in subs.columns]
+subs["Code"] = subs["Code"].astype(str).str.strip()
+subs["Substitute"] = subs["Substitute"].astype(str).str.strip()
 
 st.info(f"📦 Loaded {len(products)} Cin7 products and {len(subs)} substitution records from repo.")
 
@@ -110,9 +113,34 @@ if pm_files:
         pm["PartCode"] = pm["PartCode"].astype(str).str.strip()
         products["Code"] = products["Code"].astype(str).str.strip()
 
+        # ---------------------------------------------
+        # ♻️ Substitution Logic Restored
+        # ---------------------------------------------
+        pm_with_subs = pm[pm["PartCode"].isin(subs["Code"])]
+        if not pm_with_subs.empty:
+            st.subheader(f"♻️ Possible Substitutions in {fname}")
+            swapped_rows = []
+            for _, row in pm_with_subs.iterrows():
+                orig = row["PartCode"]
+                sub = subs.loc[subs["Code"] == orig, "Substitute"].iloc[0]
+                swap = st.radio(
+                    f"{orig} can be substituted with {sub}. Swap?",
+                    options=["Keep Original", "Swap to Substitute"],
+                    horizontal=True,
+                    key=f"{fname}-{orig}"
+                )
+                if swap == "Swap to Substitute":
+                    pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
+                    swapped_rows.append(orig)
+            if swapped_rows:
+                st.success(f"✅ Substitutions applied for: {', '.join(swapped_rows)}")
+
+        # ---------------------------------------------
+        # 🔗 Merge with Cin7 Products
+        # ---------------------------------------------
         merged = pd.merge(pm, products, how="left", left_on="PartCode", right_on="Code", suffixes=("_PM","_CIN7"))
 
-        # Contact lookup
+        # 🔍 Contact Lookup
         proj_map, rep_map, mem_map = {}, {}, {}
         for comp in merged["AccountNumber"].unique():
             d = get_contact_data(comp, api_username, api_key, base_url)
@@ -124,7 +152,7 @@ if pm_files:
         merged["SalesRepFromAPI"] = merged["AccountNumber"].map(rep_map)
         merged["MemberIdFromAPI"] = merged["AccountNumber"].map(mem_map)
 
-        # Branch logic
+        # 🏢 Branch Logic
         merged["BranchName"] = merged["SalesRepFromAPI"].apply(
             lambda r: "Hamilton" if r.strip().lower() == "charlotte meyer" else "Avondale"
         )
@@ -132,7 +160,7 @@ if pm_files:
             lambda b: branch_hamilton if b=="Hamilton" else branch_avondale
         )
 
-        # Build output
+        # 📦 Build Output
         etd = (datetime.now()+timedelta(days=2)).strftime("%Y-%m-%d")
         out = pd.DataFrame({
             "Branch": merged["BranchName"],
