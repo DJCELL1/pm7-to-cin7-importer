@@ -117,6 +117,7 @@ if pm_files:
         # ♻️ Substitution Logic Restored
         # ---------------------------------------------
         pm_with_subs = pm[pm["PartCode"].isin(subs["Code"])]
+
         if not pm_with_subs.empty:
             st.subheader(f"♻️ Possible Substitutions in {fname}")
             swapped_rows = []
@@ -140,7 +141,25 @@ if pm_files:
         # ---------------------------------------------
         merged = pd.merge(pm, products, how="left", left_on="PartCode", right_on="Code", suffixes=("_PM","_CIN7"))
 
+        # ---------------------------------------------
+        # 🚨 WARNING FOR MISSING CODES (YOUR REQUEST)
+        # ---------------------------------------------
+        missing_codes = merged[
+            merged["Description"].isna() &
+            ~merged["PartCode"].isin(subs["Code"])
+        ]["PartCode"].unique()
+
+        if len(missing_codes) > 0:
+            st.warning(
+                "Bruv these codes don’t exist in Cin7, fix it now or push through "
+                "to make it John’s problem 🙂:<br><br>" +
+                ", ".join(missing_codes),
+                icon="⚠️"
+            )
+
+        # ---------------------------------------------
         # 🔍 Contact Lookup
+        # ---------------------------------------------
         proj_map, rep_map, mem_map = {}, {}, {}
         for comp in merged["AccountNumber"].unique():
             d = get_contact_data(comp, api_username, api_key, base_url)
@@ -183,6 +202,7 @@ if pm_files:
 
     df = pd.concat(all_out, ignore_index=True)
     st.session_state["final_output"] = df
+
     st.subheader("📦 Combined Output")
     st.dataframe(df.head(50))
 
@@ -249,13 +269,19 @@ if pm_files:
                 results.append({"Order Ref":ref,"Success":False,"Error":str(e)})
         return results
 
-    # Download + Push Buttons
-    st.download_button("⬇️ Download Combined CSV",
+    # ---------------------------------------------
+    # DOWNLOAD + PUSH BUTTONS
+    # ---------------------------------------------
+    st.download_button(
+        "⬇️ Download Combined CSV",
         data=df.to_csv(index=False).encode("utf-8"),
-        file_name=f"Cin7_Upload_{datetime.now():%Y%m%d}.csv", mime="text/csv")
+        file_name=f"Cin7_Upload_{datetime.now():%Y%m%d}.csv",
+        mime="text/csv"
+    )
 
     st.subheader("🚀 Next Actions")
     col1, col2 = st.columns(2)
+
     with col1:
         if st.button("🚀 Push to Cin7 Sales Order"):
             if "final_output" in st.session_state:
@@ -271,6 +297,7 @@ if pm_files:
                     st.json(bad)
             else:
                 st.warning("⚠️ No data to push.")
+
     with col2:
         if st.button("🧾 Push to Cin7 Purchase Order"):
             st.info("Purchase Order push not yet connected.")
