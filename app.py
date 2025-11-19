@@ -56,32 +56,75 @@ def get_users_map(api_username, api_key, base_url):
         r = requests.get(url, auth=HTTPBasicAuth(api_username, api_key))
         if r.status_code == 200:
             users = r.json()
-            return {u["id"]: f"{u.get('firstName','')} {u.get('lastName','')}".strip()
-                    for u in users if u.get("isActive", True)}
+            return {
+                u["id"]: f"{u.get('firstName','')} {u.get('lastName','')}".strip()
+                for u in users if u.get("isActive", True)
+            }
         return {}
     except Exception:
         return {}
 
+# ------------------------------------------------------
+# ⭐ UPDATED: SMART COMPANY LOOKUP WITH CODE FALLBACK ⭐
+# ------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def get_contact_data(company_name, api_username, api_key, base_url):
+
+    def clean(s):
+        if not s:
+            return ""
+        s = str(s).upper().strip()
+        s = re.sub(r"\s+", " ", s)
+        return s
+
+    def extract_code(s):
+        if not s:
+            return ""
+        parts = str(s).split("-")
+        return parts[-1].strip().upper() if parts else str(s).strip().upper()
+
     if not company_name:
         return {"projectName": "", "salesPersonId": None, "memberId": None}
+
+    # ---------- 1. NAME MATCH ----------
+    cleaned_name = clean(company_name)
     url = f"{base_url.rstrip('/')}/v1/Contacts"
-    params = {"where": f"company='{company_name}'"}
+    params = {"where": f"company='{cleaned_name}'"}
+
     try:
         r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
         if r.status_code == 200:
             data = r.json()
             if data and isinstance(data, list):
-                first = data[0]
+                c = data[0]
                 return {
-                    "projectName": first.get("firstName", ""),
-                    "salesPersonId": first.get("salesPersonId"),
-                    "memberId": first.get("id")
+                    "projectName": c.get("firstName", ""),
+                    "salesPersonId": c.get("salesPersonId"),
+                    "memberId": c.get("id")
                 }
-        return {"projectName": "", "salesPersonId": None, "memberId": None}
     except Exception:
-        return {"projectName": "", "salesPersonId": None, "memberId": None}
+        pass
+
+    # ---------- 2. ACCOUNT NUMBER MATCH ----------
+    code = extract_code(company_name)
+
+    try:
+        params = {"where": f"accountNumber='{code}'"}
+        r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
+        if r.status_code == 200:
+            data = r.json()
+            if data and isinstance(data, list):
+                c = data[0]
+                return {
+                    "projectName": c.get("firstName", ""),
+                    "salesPersonId": c.get("salesPersonId"),
+                    "memberId": c.get("id")
+                }
+    except Exception:
+        pass
+
+    # ---------- 3. FAIL ----------
+    return {"projectName": "", "salesPersonId": None, "memberId": None}
 
 users_map = get_users_map(api_username, api_key, base_url)
 if users_map:
@@ -114,7 +157,7 @@ if pm_files:
         products["Code"] = products["Code"].astype(str).str.strip()
 
         # ---------------------------------------------
-        # ♻️ Substitution Logic Restored
+        # ♻️ Substitution Logic
         # ---------------------------------------------
         pm_with_subs = pm[pm["PartCode"].isin(subs["Code"])]
 
@@ -139,10 +182,12 @@ if pm_files:
         # ---------------------------------------------
         # 🔗 Merge with Cin7 Products
         # ---------------------------------------------
-        merged = pd.merge(pm, products, how="left", left_on="PartCode", right_on="Code", suffixes=("_PM","_CIN7"))
+        merged = pd.merge(pm, products, how="left",
+                          left_on="PartCode", right_on="Code",
+                          suffixes=("_PM","_CIN7"))
 
         # ---------------------------------------------
-        # 🚨 WARNING FOR MISSING CODES (YOUR REQUEST)
+        # 🚨 Missing CIN7 codes
         # ---------------------------------------------
         missing_codes = merged[
             merged["Description"].isna() &
@@ -158,7 +203,7 @@ if pm_files:
             )
 
         # ---------------------------------------------
-        # 🔍 Contact Lookup
+        # 🔍 Contact Lookup (updated logic now applies)
         # ---------------------------------------------
         proj_map, rep_map, mem_map = {}, {}, {}
         for comp in merged["AccountNumber"].unique():
@@ -171,7 +216,9 @@ if pm_files:
         merged["SalesRepFromAPI"] = merged["AccountNumber"].map(rep_map)
         merged["MemberIdFromAPI"] = merged["AccountNumber"].map(mem_map)
 
-        # 🏢 Branch Logic
+        # ---------------------------------------------
+        # 🏢 Branch logic
+        # ---------------------------------------------
         merged["BranchName"] = merged["SalesRepFromAPI"].apply(
             lambda r: "Hamilton" if r.strip().lower() == "charlotte meyer" else "Avondale"
         )
@@ -179,8 +226,8 @@ if pm_files:
             lambda b: branch_hamilton if b=="Hamilton" else branch_avondale
         )
 
-        # 📦 Build Output
-        etd = (datetime.now()+timedelta(days=2)).strftime("%Y-%m-%d")
+        # 📦 Final Output
+        etd = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
         out = pd.DataFrame({
             "Branch": merged["BranchName"],
             "Entered By": "",
@@ -228,7 +275,7 @@ if pm_files:
                 mem = grp["MemberId"].iloc[0] if "MemberId" in grp.columns else None
 
                 lines = []
-                for _,r in grp.iterrows():
+                for _, r in grp.iterrows():
                     lines.append({
                         "code": str(r["Item Code"]),
                         "name": str(r["Product Name"]),
@@ -256,17 +303,19 @@ if pm_files:
                     "lineItems": lines
                 }]
 
-                r = requests.post(url, headers=heads,
-                                  data=json.dumps(payload),
-                                  auth=HTTPBasicAuth(api_username, api_key))
+                r = requests.post(
+                    url, headers=heads,
+                    data=json.dumps(payload),
+                    auth=HTTPBasicAuth(api_username, api_key)
+                )
 
                 if r.status_code == 200:
-                    results.append({"Order Ref":ref,"Success":True,"Response":r.json()})
+                    results.append({"Order Ref": ref, "Success": True, "Response": r.json()})
                 else:
-                    results.append({"Order Ref":ref,"Success":False,
-                                    "Status":r.status_code,"Error":r.text})
+                    results.append({"Order Ref": ref, "Success": False,
+                                    "Status": r.status_code, "Error": r.text})
             except Exception as e:
-                results.append({"Order Ref":ref,"Success":False,"Error":str(e)})
+                results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
         return results
 
     # ---------------------------------------------
