@@ -65,10 +65,12 @@ def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None
             headers=headers
         )
 
-        # Catch non-200 without dying
         if r.status_code != 200:
-            body = r.text[:500]  # trim to avoid giant errors
-            raise Exception(f"Cin7 API error {r.status_code}: {body}")
+            st.error(f"Cin7 API error {r.status_code}")
+            st.warning("Cin7 Raw Response Below:")
+            st.code(r.text)
+            raise Exception(f"Cin7 API error {r.status_code}")
+
 
         try:
             data = r.json()
