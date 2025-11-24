@@ -6,6 +6,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
 
+
 CACHE_FILE = "products_cache.parquet"
 META_FILE = "products_cache_meta.json"
 
@@ -42,53 +43,62 @@ def load_cached_products(max_age_hours=24):
 # Refresh the Cin7 product cache via API
 # ----------------------------------------------------
 def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None):
+    """
+    Pulls ALL Cin7 products via API in batches, saves a new cache file.
+    """
+
     if show_spinner:
-        show_spinner("Pulling products from Cin7…")
+        show_spinner("Pulling products from Cin7… this may take 10–40 seconds.")
 
     url = f"{base_url.rstrip('/')}/v1/Products"
     headers = {"Content-Type": "application/json"}
 
     all_rows = []
     skip = 0
-    take = 500
+    take = 500  # safe batch size
 
     while True:
-    params = {
-        "skip": skip,
-        "top": take
-    }
+        params = {
+            "skip": skip,
+            "top": take
+        }
 
-    r = requests.get(
-        url,
-        params=params,
-        auth=HTTPBasicAuth(api_username, api_key),
-        headers=headers
-    )
+        r = requests.get(
+            url,
+            params=params,
+            auth=HTTPBasicAuth(api_username, api_key),
+            headers=headers
+        )
 
-    if r.status_code != 200:
-        st.error(f"Cin7 API error {r.status_code}")
-        st.warning("Cin7 Raw Response Below:")
-        st.code(r.text)
-        raise Exception(f"Cin7 API error {r.status_code}")
+        # If Cin7 rejects the request
+        if r.status_code != 200:
+            st.error(f"Cin7 API error {r.status_code}")
+            st.warning("Cin7 Raw Response Below:")
+            st.code(r.text)
+            raise Exception(f"Cin7 API error {r.status_code}")
 
-    try:
-        data = r.json()
-    except:
-        st.error("Cin7 returned NON-JSON data:")
-        st.code(r.text)
-        raise Exception("Cin7 did not return JSON")
+        # Try to parse JSON, otherwise show raw HTML
+        try:
+            data = r.json()
+        except Exception:
+            st.error("Cin7 returned NON-JSON response:")
+            st.code(r.text[:500])
+            raise Exception("Cin7 did not return JSON")
 
-    if not data:
-        break
+        # Stop when no more data
+        if not data:
+            break
 
-    all_rows.extend(data)
-    skip += take
+        all_rows.extend(data)
+        skip += take
 
-
+    # Convert to DataFrame
     df = pd.DataFrame(all_rows)
 
+    # Save cache
     df.to_parquet(CACHE_FILE, index=False)
+
     with open(META_FILE, "w") as f:
-        json.dump({"updated": datetime.now().isoformat()}, f)
+        json.dump({"updated": datetime.now().isoformat()}, f, indent=2)
 
     return df
