@@ -41,24 +41,21 @@ def load_cached_products(max_age_hours=24):
 # Refresh the Cin7 product cache via API
 # ----------------------------------------------------
 def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None):
-    """
-    Pulls ALL Cin7 products via API in batches, saves a new cache file.
-    """
-
     if show_spinner:
-        show_spinner("Pulling products from Cin7… this might take 20–40 seconds sole.")
+        show_spinner("Pulling products from Cin7…")
 
     url = f"{base_url.rstrip('/')}/v1/Products"
     headers = {"Content-Type": "application/json"}
 
     all_rows = []
     skip = 0
-    take = 500  # safe batch size
+    take = 500
 
     while True:
         params = {
             "skip": skip,
-            "top": take
+            "top": take,
+            "where": "1=1"
         }
 
         r = requests.get(
@@ -68,10 +65,17 @@ def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None
             headers=headers
         )
 
+        # Catch non-200 without dying
         if r.status_code != 200:
-            raise Exception(f"Cin7 API fail: {r.status_code} {r.text}")
+            body = r.text[:500]  # trim to avoid giant errors
+            raise Exception(f"Cin7 API error {r.status_code}: {body}")
 
-        data = r.json()
+        try:
+            data = r.json()
+        except:
+            raise Exception(f"Cin7 returned non-JSON: {r.text[:300]}")
+
+        # Pagination exit
         if not data:
             break
 
@@ -80,10 +84,8 @@ def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None
 
     df = pd.DataFrame(all_rows)
 
-    # Save cache
     df.to_parquet(CACHE_FILE, index=False)
-
     with open(META_FILE, "w") as f:
-        json.dump({"updated": datetime.now().isoformat()}, f, indent=2)
+        json.dump({"updated": datetime.now().isoformat()}, f)
 
     return df
