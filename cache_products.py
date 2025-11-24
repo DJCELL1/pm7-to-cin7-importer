@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import json
+import time
 import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
@@ -15,11 +16,6 @@ META_FILE = "products_cache_meta.json"
 # Load cached Cin7 product list
 # ----------------------------------------------------
 def load_cached_products(max_age_hours=24):
-    """
-    Loads cached Cin7 product list if not too old.
-    Otherwise returns None so caller can refresh.
-    """
-
     if not os.path.exists(CACHE_FILE) or not os.path.exists(META_FILE):
         return None
 
@@ -40,28 +36,28 @@ def load_cached_products(max_age_hours=24):
 
 
 # ----------------------------------------------------
-# Refresh the Cin7 product cache via API
+# Refresh all Cin7 products from API (RATE LIMIT SAFE)
 # ----------------------------------------------------
 def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None):
-    """
-    Pulls ALL Cin7 products via API in batches, saves a new cache file.
-    """
 
     if show_spinner:
-        show_spinner("Pulling products from Cin7… this may take 10–40 seconds.")
+        show_spinner("Pulling products from Cin7… please wait.")
 
     url = f"{base_url.rstrip('/')}/v1/Products"
     headers = {"Content-Type": "application/json"}
 
     all_rows = []
     skip = 0
-    take = 500  # safe batch size
+    take = 500  # batch size
 
     while True:
         params = {
             "skip": skip,
             "top": take
         }
+
+        # Respect API rate limits — 3 calls per second max
+        time.sleep(0.35)
 
         r = requests.get(
             url,
@@ -70,32 +66,33 @@ def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None
             headers=headers
         )
 
-        # If Cin7 rejects the request
+        if r.status_code == 429:
+            st.warning("Hit Cin7 rate limit (429). Waiting 2 seconds before continuing…")
+            time.sleep(2)
+            continue
+
         if r.status_code != 200:
             st.error(f"Cin7 API error {r.status_code}")
             st.warning("Cin7 Raw Response Below:")
             st.code(r.text)
             raise Exception(f"Cin7 API error {r.status_code}")
 
-        # Try to parse JSON, otherwise show raw HTML
+        # Parse JSON or show raw output
         try:
             data = r.json()
         except Exception:
-            st.error("Cin7 returned NON-JSON response:")
+            st.error("Cin7 returned NON-JSON data:")
             st.code(r.text[:500])
             raise Exception("Cin7 did not return JSON")
 
-        # Stop when no more data
         if not data:
             break
 
         all_rows.extend(data)
         skip += take
 
-    # Convert to DataFrame
     df = pd.DataFrame(all_rows)
 
-    # Save cache
     df.to_parquet(CACHE_FILE, index=False)
 
     with open(META_FILE, "w") as f:
