@@ -53,37 +53,37 @@ def refresh_products_from_api(api_username, api_key, base_url, show_spinner=None
     take = 500
 
     while True:
-        params = {
-            "skip": skip,
-            "top": take,
-            "where": "1=1"
-        }
+    params = {
+        "skip": skip,
+        "top": take
+    }
 
-        r = requests.get(
-            url,
-            params=params,
-            auth=HTTPBasicAuth(api_username, api_key),
-            headers=headers
-        )
+    r = requests.get(
+        url,
+        params=params,
+        auth=HTTPBasicAuth(api_username, api_key),
+        headers=headers
+    )
 
-        if r.status_code != 200:
-            st.error(f"Cin7 API error {r.status_code}")
-            st.warning("Cin7 Raw Response Below:")
-            st.code(r.text)
-            raise Exception(f"Cin7 API error {r.status_code}")
+    if r.status_code != 200:
+        st.error(f"Cin7 API error {r.status_code}")
+        st.warning("Cin7 Raw Response Below:")
+        st.code(r.text)
+        raise Exception(f"Cin7 API error {r.status_code}")
 
+    try:
+        data = r.json()
+    except:
+        st.error("Cin7 returned NON-JSON data:")
+        st.code(r.text)
+        raise Exception("Cin7 did not return JSON")
 
-        try:
-            data = r.json()
-        except:
-            raise Exception(f"Cin7 returned non-JSON: {r.text[:300]}")
+    if not data:
+        break
 
-        # Pagination exit
-        if not data:
-            break
+    all_rows.extend(data)
+    skip += take
 
-        all_rows.extend(data)
-        skip += take
 
     df = pd.DataFrame(all_rows)
 
