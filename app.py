@@ -10,8 +10,8 @@ import os
 # ---------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v27", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v27 – Normalised Codes + Real Missing Detection")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v28", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v28 – Dual Code Validation + Normalisation")
 
 # ---------------------------------------------
 # CIN7 SECRETS
@@ -24,6 +24,17 @@ branch_hamilton = cin7.get("branch_hamilton", 2)
 branch_avondale = cin7.get("branch_avondale", 1)
 
 st.success("🔐 Cin7 API credentials loaded")
+
+# ---------------------------------------------
+# CLEAN CODE FUNCTION
+# ---------------------------------------------
+def clean_code(x):
+    if pd.isna(x):
+        return ""
+    x = str(x).strip().upper()
+    x = x.replace("–", "-").replace("—", "-").replace("-", "-")
+    x = re.sub(r"[^A-Z0-9/\-]", "", x)
+    return x
 
 # ---------------------------------------------
 # LOAD STATIC REFERENCE FILES
@@ -42,13 +53,14 @@ if not os.path.exists(subs_path):
 products = pd.read_csv(products_path)
 subs = pd.read_excel(subs_path)
 
-# Normalise everything
-products["Code"] = products["Code"].astype(str).str.strip().str.upper()
+# Normalise product codes
+products["Code"] = products["Code"].apply(clean_code)
 products["Description"] = products["Description"].astype(str).str.strip()
 
+# Clean substitute file
 subs.columns = [c.strip() for c in subs.columns]
-subs["Code"] = subs["Code"].astype(str).str.strip().str.upper()
-subs["Substitute"] = subs["Substitute"].astype(str).str.strip().str.upper()
+subs["Code"] = subs["Code"].apply(clean_code)
+subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
 st.info(f"📦 Loaded {len(products)} Cin7 products and {len(subs)} substitution records.")
 
@@ -69,8 +81,6 @@ def get_users_map(api_username, api_key, base_url):
         return {}
 
 users_map = get_users_map(api_username, api_key, base_url)
-if not users_map:
-    st.warning("⚠️ Could not load Cin7 users.")
 
 # ---------------------------------------------
 # CONTACT LOOKUP
@@ -78,21 +88,23 @@ if not users_map:
 @st.cache_data(show_spinner=False)
 def get_contact_data(company_name, api_username, api_key, base_url):
 
-    def clean(s):
-        if not s: return ""
+    def clean_text(s):
+        if not s:
+            return ""
         s = str(s).upper().strip()
         s = re.sub(r"\s+", " ", s)
         return s
 
     def extract_code(s):
-        if not s: return ""
+        if not s:
+            return ""
         parts = str(s).split("-")
         return parts[-1].strip().upper()
 
     if not company_name:
         return {"projectName": "", "salesPersonId": None, "memberId": None}
 
-    cleaned_name = clean(company_name)
+    cleaned_name = clean_text(company_name)
     url = f"{base_url.rstrip('/')}/v1/Contacts"
 
     # 1. Name match
@@ -104,14 +116,14 @@ def get_contact_data(company_name, api_username, api_key, base_url):
             if data:
                 c = data[0]
                 return {
-                    "projectName": c.get("firstName",""),
+                    "projectName": c.get("firstName", ""),
                     "salesPersonId": c.get("salesPersonId"),
                     "memberId": c.get("id")
                 }
     except:
         pass
 
-    # 2. Account number
+    # 2. Account Number match
     code = extract_code(company_name)
     try:
         params = {"where": f"accountNumber='{code}'"}
@@ -121,7 +133,7 @@ def get_contact_data(company_name, api_username, api_key, base_url):
             if data:
                 c = data[0]
                 return {
-                    "projectName": c.get("firstName",""),
+                    "projectName": c.get("firstName", ""),
                     "salesPersonId": c.get("salesPersonId"),
                     "memberId": c.get("id")
                 }
@@ -149,9 +161,13 @@ if pm_files:
         comments[order_ref] = st.text_input(f"Internal comment for {order_ref}", key=f"c-{order_ref}")
 
         pm = pd.read_csv(f)
-        pm["PartCode"] = pm["PartCode"].astype(str).str.strip().str.upper()
 
+        # Clean PM PartCodes
+        pm["PartCode"] = pm["PartCode"].apply(clean_code)
+
+        # ---------------------------------------------
         # Substitution logic
+        # ---------------------------------------------
         pm_with_subs = pm[pm["PartCode"].isin(subs["Code"])]
 
         if not pm_with_subs.empty:
@@ -168,23 +184,42 @@ if pm_files:
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
-        # Merge with products
-        merged = pd.merge(pm, products, how="left", left_on="PartCode", right_on="Code")
+        # ---------------------------------------------
+        # MERGE WITH CIN7 PRODUCTS (suffix applied)
+        # ---------------------------------------------
+        merged = pd.merge(
+            pm,
+            products,
+            how="left",
+            left_on="PartCode",
+            right_on="Code",
+            suffixes=("_PM", "_CIN7")
+        )
 
-        # REAL missing-code detection
-        missing_codes = merged[merged["Description"].isna()]["PartCode"].unique()
+        # ---------------------------------------------
+        # OPTION 3: Dual missing-code detection
+        # ---------------------------------------------
+        pm_codes = pm["PartCode"]
+        cin7_codes = products["Code"]
+
+        missing_by_code = pm_codes[~pm_codes.isin(cin7_codes)].unique()
+        missing_by_merge = merged[merged["Description_CIN7"].isna()]["PartCode"].unique()
+
+        missing_codes = sorted(list(set(missing_by_code) | set(missing_by_merge)))
 
         if len(missing_codes) > 0:
             st.error(
-                "🚨 Uso these codes are missing from Cin7 (and substitutes didn’t save you):<br><br>"
+                "🚨 These codes are NOT in Cin7 or failed validation:<br><br>"
                 + "<strong>" + ", ".join(missing_codes) + "</strong>",
                 icon="⚠️"
             )
-            proceed_anyway = st.checkbox("I accept the chaos and want to continue anyway.")
+            proceed_anyway = st.checkbox("I acknowledge these codes are invalid and want to continue anyway.")
         else:
             proceed_anyway = True
 
+        # ---------------------------------------------
         # Contact lookup
+        # ---------------------------------------------
         proj_map, rep_map, mem_map = {}, {}, {}
         pm_accounts = merged["AccountNumber"].dropna().unique()
 
@@ -203,7 +238,7 @@ if pm_files:
             lambda r: "Hamilton" if r.strip().lower() == "charlotte meyer" else "Avondale"
         )
         merged["BranchId"] = merged["BranchName"].apply(
-            lambda b: branch_hamilton if b=="Hamilton" else branch_avondale
+            lambda b: branch_hamilton if b == "Hamilton" else branch_avondale
         )
 
         etd = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
@@ -220,7 +255,7 @@ if pm_files:
             "Customer PO No": po_no,
             "Order Ref": order_ref,
             "Item Code": merged["PartCode"],
-            "Product Name": merged["Description"],
+            "Product Name": merged["Description_CIN7"],
             "Item Qty": merged["ProductQuantity"],
             "Item Price": merged["ProductPrice"],
             "Price Tier": "Trade (NZD - Excl)"
@@ -245,9 +280,9 @@ if pm_files:
         for ref, grp in df.groupby("Order Ref"):
             try:
                 branch = grp["Branch"].iloc[0]
-                branch_id = branch_hamilton if branch=="Hamilton" else branch_avondale
+                branch_id = branch_hamilton if branch == "Hamilton" else branch_avondale
                 rep = grp["Sales Rep"].iloc[0]
-                sales_id = next((i for i,n in users_map.items() if n==rep), None)
+                sales_id = next((i for i, n in users_map.items() if n == rep), None)
                 po = grp["Customer PO No"].iloc[0]
                 proj = grp["Project Name"].iloc[0]
                 comp = grp["Company"].iloc[0]
@@ -311,7 +346,7 @@ if pm_files:
 
     if st.button("🚀 Push to Cin7 Sales Orders"):
         if not proceed_anyway:
-            st.error("Uso… fix your dumbass missing codes. Or tick the chaos box.")
+            st.error("Fix missing codes or acknowledge the override checkbox.")
             st.stop()
 
         st.info("Sending Sales Orders to Cin7 …")
