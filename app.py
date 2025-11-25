@@ -353,7 +353,7 @@ if pm_files:
     col1, col2 = st.columns(2)
 
     with col1:
-    if st.button("🚀 Push to Cin7 Sales Order"):
+        if st.button("🚀 Push to Cin7 Sales Order"):
         if not proceed_anyway:
             st.error("Sole… fix your damn codes first. Or tick the box to be reckless.")
             st.stop()
