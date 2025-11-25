@@ -11,7 +11,7 @@ import os
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="ProMaster → Cin7 Importer v29", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v29 — Correct Field Mapping + Dual Detection")
+st.title("🧱 ProMaster → Cin7 Importer v29 — Correct Field Mapping + Dual Detect")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
