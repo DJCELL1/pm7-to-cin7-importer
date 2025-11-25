@@ -205,7 +205,8 @@ if pm_files:
         missing_by_code = pm_codes[~pm_codes.isin(cin7_codes)].unique()
         missing_by_merge = merged[merged["Description_CIN7"].isna()]["PartCode"].unique()
 
-        missing_codes = sorted(list(set(missing_by_code) | set(missing_by_merge)))
+        missing_codes = merged[merged["Description_CIN7"].isna()]["PartCode"].unique()
+
 
         if len(missing_codes) > 0:
             st.error(
