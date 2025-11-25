@@ -319,6 +319,27 @@ if pm_files:
         return results
 
     # ---------------------------------------------
+    # ❗ HARD PROMPT: Missing Codes Confirmation
+    # ---------------------------------------------
+    missing_codes = merged[
+        merged["Description"].isna() &
+        ~merged["PartCode"].isin(subs["Code"])
+    ]["PartCode"].unique()
+
+    if len(missing_codes) > 0:
+        st.error(
+            "🚨 Uso, these codes are missing from BOTH Cin7 Products and Substitutes:"
+            + "<br><br><strong>" + ", ".join(missing_codes) + "</strong><br><br>"
+            + "Fix it… or hit the checkbox below if you wanna make it John’s problem 🤷🏽‍♂️",
+            icon="⚠️"
+        )
+
+        proceed_anyway = st.checkbox(
+            "I acknowledge I'm about to dump broken codes into Cin7 like a true menace"
+        )
+    else:
+        proceed_anyway = True
+    # ---------------------------------------------
     # DOWNLOAD + PUSH BUTTONS
     # ---------------------------------------------
     st.download_button(
@@ -332,20 +353,25 @@ if pm_files:
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("🚀 Push to Cin7 Sales Order"):
-            if "final_output" in st.session_state:
-                st.info("Sending Sales Orders to Cin7 …")
-                res = push_sales_orders_to_cin7(st.session_state["final_output"])
-                ok = [r for r in res if r["Success"]]
-                bad = [r for r in res if not r["Success"]]
-                if ok:
-                    st.success(f"✅ {len(ok)} Sales Orders created.")
-                    st.json(ok)
-                if bad:
-                    st.error(f"❌ {len(bad)} failed.")
-                    st.json(bad)
-            else:
-                st.warning("⚠️ No data to push.")
+    if st.button("🚀 Push to Cin7 Sales Order"):
+        if not proceed_anyway:
+            st.error("Sole… fix your damn codes first. Or tick the box to be reckless.")
+            st.stop()
+
+        if "final_output" in st.session_state:
+            st.info("Sending Sales Orders to Cin7 …")
+            res = push_sales_orders_to_cin7(st.session_state["final_output"])
+            ok = [r for r in res if r["Success"]]
+            bad = [r for r in res if not r["Success"]]
+
+            if ok:
+                st.success(f"✅ {len(ok)} Sales Orders created.")
+            if bad:
+                st.error(f"❌ {len(bad)} failed.")
+                st.json(bad)
+        else:
+            st.warning("⚠️ No data to push.")
+
 
     with col2:
         if st.button("🧾 Push to Cin7 Purchase Order"):
