@@ -20,8 +20,8 @@ cin7 = st.secrets["cin7"]
 base_url = cin7["base_url"]
 api_username = cin7["api_username"]
 api_key = cin7["api_key"]
-branch_Hamilton = cin7.get("branch_Hamilton", 2)
-branch_Avondale = cin7.get("branch_Avondale", 1)
+branch_Hamilton = cin7.get("branch_Hamilton", 230)
+branch_Avondale = cin7.get("branch_Avondale", 3)
 
 # DEFAULT CUSTOMER IDS
 branch_Hamilton_default_member = 230
