@@ -20,12 +20,12 @@ cin7 = st.secrets["cin7"]
 base_url = cin7["base_url"]
 api_username = cin7["api_username"]
 api_key = cin7["api_key"]
-branch_hamilton = cin7.get("branch_hamilton", 2)
-branch_avondale = cin7.get("branch_avondale", 1)
+branch_Hamilton = cin7.get("branch_Hamilton", 2)
+branch_Avondale = cin7.get("branch_Avondale", 1)
 
 # DEFAULT CUSTOMER IDS
-branch_hamilton_default_member = 230
-branch_avondale_default_member = 3
+branch_Hamilton_default_member = 230
+branch_Avondale_default_member = 3
 
 # ---------------------------------------------------------
 # CLEAN CODE FUNCTION
@@ -145,9 +145,9 @@ def resolve_member_id(member_id, branch_name):
         return int(member_id)
 
     if branch_name == "Hamilton":
-        return int(branch_hamilton_default_member)
+        return int(branch_Hamilton_default_member)
 
-    return int(branch_avondale_default_member)
+    return int(branch_Avondale_default_member)
 
 # ---------------------------------------------------------
 # UPLOAD PM FILES
@@ -227,7 +227,7 @@ if pm_files:
             lambda r: "Hamilton" if isinstance(r, str) and r.strip().lower() == "charlotte meyer" else "Avondale"
         )
         merged["BranchId"] = merged["BranchName"].apply(
-            lambda b: branch_hamilton if b == "Hamilton" else branch_avondale
+            lambda b: branch_Hamilton if b == "Hamilton" else branch_Avondale
         )
 
         etd = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
@@ -269,7 +269,7 @@ if pm_files:
         for ref, grp in df.groupby("Order Ref"):
             try:
                 branch = grp["Branch"].iloc[0]
-                branch_id = branch_hamilton if branch == "Hamilton" else branch_avondale
+                branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
                 rep = grp["Sales Rep"].iloc[0]
                 sales_id = next((i for i, n in users_map.items() if n == rep), None)
                 po = grp["Customer PO No"].iloc[0]
