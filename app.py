@@ -11,7 +11,7 @@ import os
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="ProMaster → Cin7 Importer v30", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v30 — Clean Payload Debug Edition")
+st.title(" ProMaster → Cin7 Importer v30 — Bruh this better freaking work Edition")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -377,30 +377,30 @@ if pm_files:
     debug_mode = st.checkbox("🔍 Debug mode (show payloads only, don't send to Cin7)")
 
     if st.button("🚀 Push to Cin7 Sales Orders"):
-        if not proceed:
-            st.error("You must acknowledge missing codes to continue.")
-            st.stop()
+    if not proceed:
+        st.error("You must acknowledge missing codes to continue.")
+        st.stop()
 
-        st.info("Preparing payloads…")
+    st.info("Sending to Cin7…")
 
-        results, payloads = push_sales_orders_to_cin7(
-            st.session_state["final_output"],
-            debug=debug_mode
-        )
+    results, payloads = push_sales_orders_to_cin7(
+        st.session_state["final_output"]
+    )
 
-        ok = [r for r in results if r["Success"]]
-        bad = [r for r in results if not r["Success"]]
+    ok = [r for r in results if r["Success"]]
+    bad = [r for r in results if not r["Success"]]
 
-        if ok:
-            st.success(f"✅ {len(ok)} Sales Orders processed.")
+    if ok:
+        st.success(f"✅ {len(ok)} Sales Orders created.")
 
-        if bad:
-            st.error(f"❌ {len(bad)} failed.")
-            st.json(bad)
+    if bad:
+        st.error(f"❌ {len(bad)} failed.")
+        st.json(bad)
 
-        st.download_button(
-            "📥 Download All Payloads (JSON)",
-            data=json.dumps(payloads, indent=2),
-            file_name="cin7_payload_debug.json",
-            mime="application/json"
-        )
+    st.download_button(
+        "📥 Download All Payloads (JSON)",
+        data=json.dumps(payloads, indent=2),
+        file_name="cin7_payload_dump.json",
+        mime="application/json"
+    )
+
