@@ -23,6 +23,10 @@ api_key = cin7["api_key"]
 branch_hamilton = cin7.get("branch_hamilton", 2)
 branch_avondale = cin7.get("branch_avondale", 1)
 
+# DEFAULT CUSTOMER IDS
+branch_hamilton_default_member = 230
+branch_avondale_default_member = 3
+
 # ---------------------------------------------------------
 # CLEAN CODE FUNCTION
 # ---------------------------------------------------------
@@ -53,7 +57,6 @@ subs = pd.read_excel(subs_path)
 
 # NORMALISE CODES
 products["Code"] = products["Code"].apply(clean_code)
-
 subs["Code"] = subs["Code"].apply(clean_code)
 subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
@@ -85,7 +88,7 @@ def get_contact_data(company_name, api_username, api_key, base_url):
     def clean_text(s):
         if not s:
             return ""
-        s = str(s).upper().strip()
+        s = str(s).upper().trim()
         s = re.sub(r"\s+", " ", s)
         return s
 
@@ -116,7 +119,7 @@ def get_contact_data(company_name, api_username, api_key, base_url):
     except:
         pass
 
-    # 2. Account number
+    # 2. Account number lookup
     code = extract_code(company_name)
     try:
         params = {"where": f"accountNumber='{code}'"}
@@ -133,6 +136,18 @@ def get_contact_data(company_name, api_username, api_key, base_url):
         pass
 
     return {"projectName": "", "salesPersonId": None, "memberId": None}
+
+# ---------------------------------------------------------
+# MEMBER ID RESOLVER (GLOBAL)
+# ---------------------------------------------------------
+def resolve_member_id(member_id, branch_name):
+    if member_id:
+        return int(member_id)
+
+    if branch_name == "Hamilton":
+        return int(branch_hamilton_default_member)
+
+    return int(branch_avondale_default_member)
 
 # ---------------------------------------------------------
 # UPLOAD PM FILES
@@ -155,9 +170,7 @@ if pm_files:
         pm = pd.read_csv(f)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
-        # ---------------------------------------------------------
-        # SUBSTITUTION LOGIC
-        # ---------------------------------------------------------
+        # SUBSTITUTIONS
         pm_with_subs = pm[pm["PartCode"].isin(subs["Code"])]
         if not pm_with_subs.empty:
             st.info("♻️ Possible Substitutions Found:")
@@ -172,9 +185,7 @@ if pm_files:
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
-        # ---------------------------------------------------------
-        # MERGE WITH CIN7 PRODUCTS USING CODE ONLY
-        # ---------------------------------------------------------
+        # MERGE WITH CIN7 PRODUCTS
         merged = pd.merge(
             pm,
             products,
@@ -184,34 +195,20 @@ if pm_files:
             suffixes=("_PM", "_CIN7")
         )
 
-        # ---------------------------------------------------------
-        # OPTION 3: DUAL MISSING-CODE DETECTION
-        # ---------------------------------------------------------
+        # DUAL MISSING CODE DETECTION
         pm_codes = pm["PartCode"]
         cin7_codes = products["Code"]
-
-        # 1. Pure lookup failure
         missing_by_code = pm_codes[~pm_codes.isin(cin7_codes)].unique()
-
-        # 2. Merge failure (Cin7.Code is NaN after merge)
         missing_by_merge = merged[merged["Code"].isna()]["PartCode"].unique()
-
-        # Final combined list
         missing_codes = sorted(list(set(missing_by_code) | set(missing_by_merge)))
 
         if len(missing_codes) > 0:
-            st.error(
-                "🚨 These codes do NOT exist in Cin7:<br><br>"
-                + "<strong>" + ", ".join(missing_codes) + "</strong>",
-                icon="⚠️"
-            )
+            st.error("🚨 These codes do NOT exist in Cin7:<br><br>" + "<strong>" + ", ".join(missing_codes) + "</strong>", icon="⚠️")
             proceed_anyway = st.checkbox("I acknowledge these codes are invalid and want to continue anyway.")
         else:
             proceed_anyway = True
 
-        # ---------------------------------------------------------
         # CONTACT LOOKUP
-        # ---------------------------------------------------------
         proj_map, rep_map, mem_map = {}, {}, {}
         pm_accounts = merged["AccountNumber"].dropna().unique()
 
@@ -225,9 +222,7 @@ if pm_files:
         merged["SalesRepFromAPI"] = merged["AccountNumber"].map(rep_map)
         merged["MemberIdFromAPI"] = merged["AccountNumber"].map(mem_map)
 
-        # ---------------------------------------------------------
         # BRANCH LOGIC
-        # ---------------------------------------------------------
         merged["BranchName"] = merged["SalesRepFromAPI"].apply(
             lambda r: "Hamilton" if isinstance(r, str) and r.strip().lower() == "charlotte meyer" else "Avondale"
         )
@@ -235,9 +230,6 @@ if pm_files:
             lambda b: branch_hamilton if b == "Hamilton" else branch_avondale
         )
 
-        # ---------------------------------------------------------
-        # FINAL OUTPUT PREP
-        # ---------------------------------------------------------
         etd = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
 
         out = pd.DataFrame({
@@ -252,7 +244,7 @@ if pm_files:
             "Customer PO No": po_no,
             "Order Ref": order_ref,
             "Item Code": merged["PartCode"],
-            "Product Name": merged.get("Product Name", ""),  # safe fallback
+            "Product Name": merged.get("Product Name", ""),
             "Item Qty": merged["ProductQuantity"],
             "Item Price": merged["ProductPrice"],
             "Price Tier": "Trade (NZD - Excl)"
@@ -265,16 +257,6 @@ if pm_files:
 
     st.subheader("📦 Combined Output Preview")
     st.dataframe(df.head(50))
-
-    def resolve_member_id(member_id, branch_name):
-        if member_id:
-            return int(member_id)
-
-        if branch_name == "Hamilton":
-            return int(branch_hamilton_default_member)
-
-        return int(branch_avondale_default_member)
-
 
     # ---------------------------------------------------------
     # PUSH TO CIN7
@@ -295,7 +277,9 @@ if pm_files:
                 comp = grp["Company"].iloc[0]
                 comm = grp["Internal Comments"].iloc[0]
                 etd_val = grp["etd"].iloc[0]
-                mem = grp["MemberIdFromAPI"].iloc[0]
+
+                # FIXED LINE
+                mem = grp["MemberId"].iloc[0]
 
                 lines = []
                 for _, r in grp.iterrows():
