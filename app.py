@@ -269,7 +269,7 @@ if pm_files:
         for ref, grp in df.groupby("Order Ref"):
             try:
                 branch = grp["Branch"].iloc[0]
-                branch_id = branch_230 if branch == "Hamilton" else branch_3
+                branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
                 rep = grp["Sales Rep"].iloc[0]
                 sales_id = next((i for i, n in users_map.items() if n == rep), None)
                 po = grp["Customer PO No"].iloc[0]
