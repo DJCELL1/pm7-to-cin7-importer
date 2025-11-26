@@ -3,15 +3,15 @@ import pandas as pd
 import requests
 from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
-import re
 import json
+import re
 import os
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v29", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v29 — Correct Field Mapping + Dual Detect")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v30", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v30 — Clean Payload Debug Edition")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -27,8 +27,9 @@ branch_Avondale = cin7.get("branch_Avondale", 1)
 branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
+
 # ---------------------------------------------------------
-# CLEAN CODE FUNCTION
+# CLEAN CODE
 # ---------------------------------------------------------
 def clean_code(x):
     if pd.isna(x):
@@ -38,6 +39,7 @@ def clean_code(x):
     x = re.sub(r"[^A-Z0-9/\-]", "", x)
     return x
 
+
 # ---------------------------------------------------------
 # LOAD STATIC REFERENCE FILES
 # ---------------------------------------------------------
@@ -45,23 +47,23 @@ products_path = "Products.csv"
 subs_path = "Substitutes.xlsx"
 
 if not os.path.exists(products_path):
-    st.error("❌ Products.csv missing in repo root.")
+    st.error("❌ Products.csv missing.")
     st.stop()
 
 if not os.path.exists(subs_path):
-    st.error("❌ Substitutes.xlsx missing in repo root.")
+    st.error("❌ Substitutes.xlsx missing.")
     st.stop()
 
 products = pd.read_csv(products_path)
 subs = pd.read_excel(subs_path)
 
-# NORMALISE CODES
 products["Code"] = products["Code"].apply(clean_code)
 subs["Code"] = subs["Code"].apply(clean_code)
 subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
+
 # ---------------------------------------------------------
-# LOAD CIN7 USERS (CACHED)
+# LOAD CIN7 USERS
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def get_users_map(api_username, api_key, base_url):
@@ -80,11 +82,13 @@ def get_users_map(api_username, api_key, base_url):
 
 users_map = get_users_map(api_username, api_key, base_url)
 
+
 # ---------------------------------------------------------
 # CONTACT LOOKUP
 # ---------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def get_contact_data(company_name, api_username, api_key, base_url):
+
     def clean_text(s):
         if not s:
             return ""
@@ -104,12 +108,12 @@ def get_contact_data(company_name, api_username, api_key, base_url):
     cleaned_name = clean_text(company_name)
     url = f"{base_url.rstrip('/')}/v1/Contacts"
 
-    # 1. Company exact match
+    # 1. COMPANY LOOKUP
     try:
         params = {"where": f"company='{cleaned_name}'"}
         r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
         data = r.json()
-        if isinstance(data, list) and len(data) > 0:
+        if isinstance(data, list) and data:
             c = data[0]
             return {
                 "projectName": c.get("firstName", ""),
@@ -119,13 +123,13 @@ def get_contact_data(company_name, api_username, api_key, base_url):
     except:
         pass
 
-    # 2. Account number lookup
+    # 2. ACCOUNT NUMBER LOOKUP
     code = extract_code(company_name)
     try:
         params = {"where": f"accountNumber='{code}'"}
         r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
         data = r.json()
-        if isinstance(data, list) and len(data) > 0:
+        if isinstance(data, list) and data:
             c = data[0]
             return {
                 "projectName": c.get("firstName", ""),
@@ -137,17 +141,118 @@ def get_contact_data(company_name, api_username, api_key, base_url):
 
     return {"projectName": "", "salesPersonId": None, "memberId": None}
 
+
 # ---------------------------------------------------------
-# MEMBER ID RESOLVER (GLOBAL)
+# MEMBER ID RESOLUTION
 # ---------------------------------------------------------
 def resolve_member_id(member_id, branch_name):
     if member_id:
         return int(member_id)
-
     if branch_name == "Hamilton":
         return int(branch_Hamilton_default_member)
-
     return int(branch_Avondale_default_member)
+
+
+# ---------------------------------------------------------
+# PAYLOAD BUILDER
+# ---------------------------------------------------------
+def build_payload(ref, grp):
+
+    branch = grp["Branch"].iloc[0]
+    branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
+
+    rep = grp["Sales Rep"].iloc[0]
+    sales_id = next((i for i, n in users_map.items() if n == rep), None)
+
+    po = grp["Customer PO No"].iloc[0]
+    proj = grp["Project Name"].iloc[0]
+    comp = grp["Company"].iloc[0]
+    comm = grp["Internal Comments"].iloc[0]
+    etd_val = grp["etd"].iloc[0]
+    mem = grp["MemberId"].iloc[0]
+
+    line_items = []
+    for _, r in grp.iterrows():
+        line_items.append({
+            "code": str(r["Item Code"]),
+            "name": str(r["Product Name"]),
+            "qty": float(r["Item Qty"] or 0),
+            "unitPrice": float(r["Item Price"] or 0),
+            "lineComments": ""
+        })
+
+    payload = [{
+        "isApproved": True,
+        "reference": str(ref),
+        "branchId": int(branch_id),
+        "salesPersonId": int(sales_id) if sales_id else None,
+        "memberId": resolve_member_id(mem, branch),
+        "company": str(comp),
+        "projectName": str(proj or ""),
+        "internalComments": str(comm or ""),
+        "customerOrderNo": str(po or ""),
+        "estimatedDeliveryDate": f"{etd_val}T00:00:00Z",
+        "currencyCode": "NZD",
+        "taxStatus": "Incl",
+        "taxRate": 15.0,
+        "stage": "New",
+        "priceTier": "Trade (NZD - Excl)",
+        "lineItems": line_items
+    }]
+
+    return payload
+
+
+# ---------------------------------------------------------
+# CIN7 PUSH FUNCTION (with DEBUG MODE)
+# ---------------------------------------------------------
+def push_sales_orders_to_cin7(df, debug=False):
+
+    url = f"{base_url.rstrip('/')}/v1/SalesOrders?loadboms=false"
+    heads = {"Content-Type": "application/json"}
+
+    results = []
+    payload_dump = {}
+
+    for ref, grp in df.groupby("Order Ref"):
+        try:
+            payload = build_payload(ref, grp)
+            payload_dump[ref] = payload
+
+            # Display the payload BEFORE sending
+            st.subheader(f"📤 Payload for {ref}")
+            st.json(payload)
+
+            if debug:
+                results.append({
+                    "Order Ref": ref,
+                    "Success": True,
+                    "Response": "DEBUG MODE: No API call made."
+                })
+                continue
+
+            r = requests.post(
+                url,
+                headers=heads,
+                data=json.dumps(payload),
+                auth=HTTPBasicAuth(api_username, api_key)
+            )
+
+            results.append({
+                "Order Ref": ref,
+                "Success": r.status_code == 200,
+                "Response": r.text
+            })
+
+        except Exception as e:
+            results.append({
+                "Order Ref": ref,
+                "Success": False,
+                "Error": str(e)
+            })
+
+    return results, payload_dump
+
 
 # ---------------------------------------------------------
 # UPLOAD PM FILES
@@ -156,6 +261,7 @@ st.header("📤 Upload ProMaster CSV Files")
 pm_files = st.file_uploader("Upload CSV(s)", type=["csv"], accept_multiple_files=True)
 
 if pm_files:
+
     comments = {}
     all_out = []
 
@@ -172,6 +278,7 @@ if pm_files:
 
         # SUBSTITUTIONS
         pm_with_subs = pm[pm["PartCode"].isin(subs["Code"])]
+
         if not pm_with_subs.empty:
             st.info("♻️ Possible Substitutions Found:")
             for _, row in pm_with_subs.iterrows():
@@ -195,18 +302,15 @@ if pm_files:
             suffixes=("_PM", "_CIN7")
         )
 
-        # DUAL MISSING CODE DETECTION
-        pm_codes = pm["PartCode"]
-        cin7_codes = products["Code"]
-        missing_by_code = pm_codes[~pm_codes.isin(cin7_codes)].unique()
-        missing_by_merge = merged[merged["Code"].isna()]["PartCode"].unique()
-        missing_codes = sorted(list(set(missing_by_code) | set(missing_by_merge)))
+        # MISSING CODE DETECTION
+        missing_codes = merged[merged["Code"].isna()]["PartCode"].unique()
 
         if len(missing_codes) > 0:
-            st.error("🚨 These codes do NOT exist in Cin7:<br><br>" + "<strong>" + ", ".join(missing_codes) + "</strong>", icon="⚠️")
-            proceed_anyway = st.checkbox("I acknowledge these codes are invalid and want to continue anyway.")
+            st.error("🚨 These codes do NOT exist in Cin7:<br><br>" +
+                     "<strong>" + ", ".join(missing_codes) + "</strong>", icon="⚠️")
+            proceed = st.checkbox("I acknowledge these codes are invalid and want to continue anyway.")
         else:
-            proceed_anyway = True
+            proceed = True
 
         # CONTACT LOOKUP
         proj_map, rep_map, mem_map = {}, {}, {}
@@ -224,8 +328,10 @@ if pm_files:
 
         # BRANCH LOGIC
         merged["BranchName"] = merged["SalesRepFromAPI"].apply(
-            lambda r: "Hamilton" if isinstance(r, str) and r.strip().lower() == "charlotte meyer" else "Avondale"
+            lambda r: "Hamilton" if isinstance(r, str) and r.strip().lower() == "charlotte meyer"
+            else "Avondale"
         )
+
         merged["BranchId"] = merged["BranchName"].apply(
             lambda b: branch_Hamilton if b == "Hamilton" else branch_Avondale
         )
@@ -258,75 +364,7 @@ if pm_files:
     st.subheader("📦 Combined Output Preview")
     st.dataframe(df.head(50))
 
-    # ---------------------------------------------------------
-    # PUSH TO CIN7
-    # ---------------------------------------------------------
-    def push_sales_orders_to_cin7(df):
-        url = f"{base_url.rstrip('/')}/v1/SalesOrders?loadboms=false"
-        heads = {"Content-Type": "application/json"}
-        results = []
-
-        for ref, grp in df.groupby("Order Ref"):
-            try:
-                branch = grp["Branch"].iloc[0]
-                branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
-                rep = grp["Sales Rep"].iloc[0]
-                sales_id = next((i for i, n in users_map.items() if n == rep), None)
-                po = grp["Customer PO No"].iloc[0]
-                proj = grp["Project Name"].iloc[0]
-                comp = grp["Company"].iloc[0]
-                comm = grp["Internal Comments"].iloc[0]
-                etd_val = grp["etd"].iloc[0]
-
-                # FIXED LINE
-                mem = grp["MemberId"].iloc[0]
-
-                lines = []
-                for _, r in grp.iterrows():
-                    lines.append({
-                        "code": str(r["Item Code"]),
-                        "name": str(r["Product Name"]),
-                        "qty": float(r["Item Qty"] or 0),
-                        "unitPrice": float(r["Item Price"] or 0),
-                        "lineComments": ""
-                    })
-
-                payload = [{
-                    "isApproved": True,
-                    "reference": str(ref),
-                    "branchId": int(branch_id),
-                    "salesPersonId": int(sales_id) if sales_id else None,
-                    "memberId": resolve_member_id(mem, branch),
-                    "company": str(comp),
-                    "projectName": str(proj or ""),
-                    "internalComments": str(comm or ""),
-                    "customerOrderNo": str(po or ""),
-                    "estimatedDeliveryDate": f"{etd_val}T00:00:00Z",
-                    "currencyCode": "NZD",
-                    "taxStatus": "Incl",
-                    "taxRate": 15.0,
-                    "stage": "New",
-                    "priceTier": "Trade (NZD - Excl)",
-                    "lineItems": lines
-                }]
-
-                r = requests.post(url, headers=heads, data=json.dumps(payload),
-                                  auth=HTTPBasicAuth(api_username, api_key))
-
-                results.append({
-                    "Order Ref": ref,
-                    "Success": r.status_code == 200,
-                    "Response": r.text
-                })
-
-            except Exception as e:
-                results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
-
-        return results
-
-    # ---------------------------------------------------------
-    # ACTION BUTTONS
-    # ---------------------------------------------------------
+    # Download CSV
     st.download_button(
         "⬇️ Download Combined CSV",
         data=df.to_csv(index=False).encode("utf-8"),
@@ -336,19 +374,33 @@ if pm_files:
 
     st.subheader("🚀 Next Actions")
 
+    debug_mode = st.checkbox("🔍 Debug mode (show payloads only, don't send to Cin7)")
+
     if st.button("🚀 Push to Cin7 Sales Orders"):
-        if not proceed_anyway:
-            st.error("You must fix missing codes or acknowledge override to continue.")
+        if not proceed:
+            st.error("You must acknowledge missing codes to continue.")
             st.stop()
 
-        st.info("Sending Sales Orders to Cin7 …")
-        results = push_sales_orders_to_cin7(st.session_state["final_output"])
+        st.info("Preparing payloads…")
+
+        results, payloads = push_sales_orders_to_cin7(
+            st.session_state["final_output"],
+            debug=debug_mode
+        )
 
         ok = [r for r in results if r["Success"]]
         bad = [r for r in results if not r["Success"]]
 
         if ok:
-            st.success(f"✅ {len(ok)} Sales Orders created.")
+            st.success(f"✅ {len(ok)} Sales Orders processed.")
+
         if bad:
             st.error(f"❌ {len(bad)} failed.")
             st.json(bad)
+
+        st.download_button(
+            "📥 Download All Payloads (JSON)",
+            data=json.dumps(payloads, indent=2),
+            file_name="cin7_payload_debug.json",
+            mime="application/json"
+        )
