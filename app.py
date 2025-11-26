@@ -266,6 +266,16 @@ if pm_files:
     st.subheader("📦 Combined Output Preview")
     st.dataframe(df.head(50))
 
+    def resolve_member_id(member_id, branch_name):
+    if member_id:
+        return int(member_id)
+
+    if branch_name == "Hamilton":
+        return int(branch_hamilton_default_member)
+
+    return int(branch_avondale_default_member)
+
+
     # ---------------------------------------------------------
     # PUSH TO CIN7
     # ---------------------------------------------------------
@@ -302,7 +312,7 @@ if pm_files:
                     "reference": str(ref),
                     "branchId": int(branch_id),
                     "salesPersonId": int(sales_id) if sales_id else None,
-                    "memberId": int(mem) if mem else None,
+                    "memberId": resolve_member_id(mem, branch),
                     "company": str(comp),
                     "projectName": str(proj or ""),
                     "internalComments": str(comm or ""),
