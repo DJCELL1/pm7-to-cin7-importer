@@ -88,7 +88,7 @@ def get_contact_data(company_name, api_username, api_key, base_url):
     def clean_text(s):
         if not s:
             return ""
-        s = str(s).upper().trim()
+        s = str(s).upper().strip()
         s = re.sub(r"\s+", " ", s)
         return s
 
