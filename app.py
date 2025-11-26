@@ -295,7 +295,7 @@ if pm_files:
                 comp = grp["Company"].iloc[0]
                 comm = grp["Internal Comments"].iloc[0]
                 etd_val = grp["etd"].iloc[0]
-                mem = grp["MemberId"].iloc[0]
+                mem = grp["MemberIdFromAPI"].iloc[0]
 
                 lines = []
                 for _, r in grp.iterrows():
