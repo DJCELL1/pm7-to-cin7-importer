@@ -267,13 +267,13 @@ if pm_files:
     st.dataframe(df.head(50))
 
     def resolve_member_id(member_id, branch_name):
-    if member_id:
-        return int(member_id)
+        if member_id:
+            return int(member_id)
 
-    if branch_name == "Hamilton":
-        return int(branch_hamilton_default_member)
+        if branch_name == "Hamilton":
+            return int(branch_hamilton_default_member)
 
-    return int(branch_avondale_default_member)
+        return int(branch_avondale_default_member)
 
 
     # ---------------------------------------------------------
