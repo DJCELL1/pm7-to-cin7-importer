@@ -201,7 +201,7 @@ def build_payload(ref, grp):
         "customerOrderNo": str(po or ""),
         "estimatedDeliveryDate": f"{etd_val}T00:00:00Z",
         "currencyCode": "NZD",
-        "taxStatus": "Incl",
+        "taxStatus": "Excl",
         "taxRate": 15.0,
         "stage": "New",
         "priceTier": "Trade (NZD - Excl)",
