@@ -10,17 +10,18 @@ import os
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v32", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v32 — Production Edition")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v31", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v31 — Production Edition")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
 # ---------------------------------------------------------
 cin7 = st.secrets["cin7"]
-base_url = cin7["base_url"].rstrip("/")
+base_url = cin7["base_url"]
 api_username = cin7["api_username"]
 api_key = cin7["api_key"]
 
+# You updated these — keeping your numbers
 branch_Hamilton = cin7.get("branch_Hamilton", 230)
 branch_Avondale = cin7.get("branch_Avondale", 3)
 
@@ -39,24 +40,7 @@ def clean_code(x):
     return x
 
 # ---------------------------------------------------------
-# CIN7 LIVE REFRESH HELPERS
-# ---------------------------------------------------------
-def get_cin7_products():
-    url = f"{base_url}/v1/Products"
-    r = requests.get(url, auth=HTTPBasicAuth(api_username, api_key))
-    if r.status_code == 200:
-        return pd.DataFrame(r.json())
-    return None
-
-def get_cin7_branches():
-    url = f"{base_url}/v1/Branches"
-    r = requests.get(url, auth=HTTPBasicAuth(api_username, api_key))
-    if r.status_code == 200:
-        return pd.DataFrame(r.json())
-    return None
-
-# ---------------------------------------------------------
-# LOAD STATIC FILES (LOCAL FIRST)
+# LOAD STATIC REFERENCE FILES
 # ---------------------------------------------------------
 products_path = "Products.csv"
 subs_path = "Substitutes.xlsx"
@@ -77,11 +61,12 @@ subs["Code"] = subs["Code"].apply(clean_code)
 subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
 # ---------------------------------------------------------
-# LOAD CIN7 USERS (NO CACHING TO FORCE REAL UPDATES)
+# LOAD CIN7 USERS
 # ---------------------------------------------------------
+@st.cache_data(show_spinner=False)
 def get_users_map(api_username, api_key, base_url):
     try:
-        url = f"{base_url}/v1/Users"
+        url = f"{base_url.rstrip('/')}/v1/Users"
         r = requests.get(url, auth=HTTPBasicAuth(api_username, api_key))
         if r.status_code == 200:
             users = r.json()
@@ -96,8 +81,9 @@ def get_users_map(api_username, api_key, base_url):
 users_map = get_users_map(api_username, api_key, base_url)
 
 # ---------------------------------------------------------
-# CONTACT LOOKUP (ALWAYS LIVE)
+# CONTACT LOOKUP
 # ---------------------------------------------------------
+@st.cache_data(show_spinner=False)
 def get_contact_data(company_name, api_username, api_key, base_url):
 
     def clean_text(s):
@@ -117,7 +103,7 @@ def get_contact_data(company_name, api_username, api_key, base_url):
         return {"projectName": "", "salesPersonId": None, "memberId": None}
 
     cleaned_name = clean_text(company_name)
-    url = f"{base_url}/v1/Contacts"
+    url = f"{base_url.rstrip('/')}/v1/Contacts"
 
     # 1. COMPANY LOOKUP
     try:
@@ -153,17 +139,17 @@ def get_contact_data(company_name, api_username, api_key, base_url):
     return {"projectName": "", "salesPersonId": None, "memberId": None}
 
 # ---------------------------------------------------------
-# SAFER MEMBERID LOGIC
+# MEMBER ID RESOLUTION
 # ---------------------------------------------------------
 def resolve_member_id(member_id, branch_name):
-    if member_id and int(member_id) != 0:
+    if member_id:
         return int(member_id)
     if branch_name == "Hamilton":
-        return branch_Hamilton_default_member
-    return branch_Avondale_default_member
+        return int(branch_Hamilton_default_member)
+    return int(branch_Avondale_default_member)
 
 # ---------------------------------------------------------
-# PAYLOAD BUILDER WITH ETD OVERRIDE
+# PAYLOAD BUILDER
 # ---------------------------------------------------------
 def build_payload(ref, grp):
 
@@ -177,7 +163,7 @@ def build_payload(ref, grp):
     proj = grp["Project Name"].iloc[0]
     comp = grp["Company"].iloc[0]
     comm = grp["Internal Comments"].iloc[0]
-    etd_val = grp["ETD"].iloc[0]
+    etd_val = grp["etd"].iloc[0]
     mem = grp["MemberId"].iloc[0]
 
     line_items = []
@@ -212,11 +198,11 @@ def build_payload(ref, grp):
     return payload
 
 # ---------------------------------------------------------
-# CIN7 PUSH FUNCTION
+# CIN7 PUSH FUNCTION (PRODUCTION ONLY)
 # ---------------------------------------------------------
 def push_sales_orders_to_cin7(df):
 
-    url = f"{base_url}/v1/SalesOrders?loadboms=false"
+    url = f"{base_url.rstrip('/')}/v1/SalesOrders?loadboms=false"
     heads = {"Content-Type": "application/json"}
 
     results = []
@@ -250,26 +236,6 @@ def push_sales_orders_to_cin7(df):
     return results, payload_dump
 
 # ---------------------------------------------------------
-# SIDEBAR CONTROLS
-# ---------------------------------------------------------
-st.sidebar.header("⚙️ Tools")
-show_payloads = st.sidebar.checkbox("Show API Payloads")
-refresh_products_btn = st.sidebar.button("🔄 Refresh Cin7 Products")
-refresh_contacts_btn = st.sidebar.button("🔄 Refresh Contacts Cache")
-
-if refresh_products_btn:
-    live = get_cin7_products()
-    if live is not None:
-        st.success("Products refreshed from Cin7.")
-        products = live
-    else:
-        st.error("Failed to refresh products.")
-
-if refresh_contacts_btn:
-    st.cache_data.clear()
-    st.success("Contact cache cleared.")
-
-# ---------------------------------------------------------
 # UPLOAD PM FILES
 # ---------------------------------------------------------
 st.header("📤 Upload ProMaster CSV Files")
@@ -278,7 +244,6 @@ pm_files = st.file_uploader("Upload CSV(s)", type=["csv"], accept_multiple_files
 if pm_files:
 
     comments = {}
-    etd_overrides = {}
     all_out = []
 
     for f in pm_files:
@@ -287,9 +252,7 @@ if pm_files:
         po_no = order_ref.split(".")[0]
 
         st.subheader(f"📄 {fname}")
-
         comments[order_ref] = st.text_input(f"Internal comment for {order_ref}", key=f"c-{order_ref}")
-        etd_overrides[order_ref] = st.date_input(f"ETD for {order_ref}", datetime.now() + timedelta(days=2))
 
         pm = pd.read_csv(f)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
@@ -310,7 +273,7 @@ if pm_files:
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
-        # MERGE WITH PRODUCTS
+        # MERGE WITH CIN7 PRODUCTS
         merged = pd.merge(
             pm,
             products,
@@ -354,6 +317,8 @@ if pm_files:
             lambda b: branch_Hamilton if b == "Hamilton" else branch_Avondale
         )
 
+        etd = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+
         out = pd.DataFrame({
             "Branch": merged["BranchName"],
             "Entered By": "",
@@ -362,7 +327,7 @@ if pm_files:
             "Company": merged["AccountNumber"],
             "MemberId": merged["MemberIdFromAPI"],
             "Internal Comments": comments.get(order_ref, ""),
-            "ETD": etd_overrides[order_ref].strftime("%Y-%m-%d"),
+            "etd": etd,
             "Customer PO No": po_no,
             "Order Ref": order_ref,
             "Item Code": merged["PartCode"],
@@ -396,7 +361,9 @@ if pm_files:
 
         st.info("Sending to Cin7…")
 
-        results, payloads = push_sales_orders_to_cin7(df)
+        results, payloads = push_sales_orders_to_cin7(
+            st.session_state["final_output"]
+        )
 
         ok = [r for r in results if r["Success"]]
         bad = [r for r in results if not r["Success"]]
@@ -408,7 +375,9 @@ if pm_files:
             st.error(f"❌ {len(bad)} failed.")
             st.json(bad)
 
-        if show_payloads:
-            st.subheader("📝 Payload Debug")
-            st.json(payloads)
-
+        st.download_button(
+            "📥 Download All Payloads (JSON)",
+            data=json.dumps(payloads, indent=2),
+            file_name="cin7_payload_dump.json",
+            mime="application/json"
+        )
