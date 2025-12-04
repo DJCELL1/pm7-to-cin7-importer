@@ -10,8 +10,8 @@ import os
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v32", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v32 — Production Edition")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v33", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v33 — Production Edition")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -77,7 +77,7 @@ subs["Code"] = subs["Code"].apply(clean_code)
 subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
 # ---------------------------------------------------------
-# LOAD CIN7 USERS (NO CACHING TO FORCE REAL UPDATES)
+# LOAD CIN7 USERS (ALWAYS LIVE)
 # ---------------------------------------------------------
 def get_users_map(api_username, api_key, base_url):
     try:
@@ -96,7 +96,7 @@ def get_users_map(api_username, api_key, base_url):
 users_map = get_users_map(api_username, api_key, base_url)
 
 # ---------------------------------------------------------
-# CONTACT LOOKUP (ALWAYS LIVE)
+# CONTACT LOOKUP (NO CACHE)
 # ---------------------------------------------------------
 def get_contact_data(company_name, api_username, api_key, base_url):
 
@@ -153,7 +153,7 @@ def get_contact_data(company_name, api_username, api_key, base_url):
     return {"projectName": "", "salesPersonId": None, "memberId": None}
 
 # ---------------------------------------------------------
-# SAFER MEMBERID LOGIC
+# SAFER MEMBER ID LOGIC
 # ---------------------------------------------------------
 def resolve_member_id(member_id, branch_name):
     if member_id and int(member_id) != 0:
@@ -163,7 +163,7 @@ def resolve_member_id(member_id, branch_name):
     return branch_Avondale_default_member
 
 # ---------------------------------------------------------
-# PAYLOAD BUILDER WITH ETD OVERRIDE
+# PAYLOAD BUILDER (NO ITEM COMMENTS)
 # ---------------------------------------------------------
 def build_payload(ref, grp):
 
@@ -186,8 +186,7 @@ def build_payload(ref, grp):
             "code": str(r["Item Code"]),
             "name": str(r["Product Name"]),
             "qty": float(r["Item Qty"] or 0),
-            "unitPrice": float(r["Item Price"] or 0),
-            "lineComments": ""
+            "unitPrice": float(r["Item Price"] or 0)
         })
 
     payload = [{
@@ -255,7 +254,7 @@ def push_sales_orders_to_cin7(df):
 st.sidebar.header("⚙️ Tools")
 show_payloads = st.sidebar.checkbox("Show API Payloads")
 refresh_products_btn = st.sidebar.button("🔄 Refresh Cin7 Products")
-refresh_contacts_btn = st.sidebar.button("🔄 Refresh Contacts Cache")
+refresh_contacts_btn = st.sidebar.button("🔄 Clear Contacts Cache")
 
 if refresh_products_btn:
     live = get_cin7_products()
