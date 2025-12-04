@@ -9,8 +9,8 @@ import re
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v36", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v36 — Full BOM Explosion + Auto Supplier")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v36.1", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v36.1 — Full BOM + CRM Abbrev + Auto Supplier")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -28,16 +28,14 @@ branch_Avondale_default_member = 3
 
 
 # ---------------------------------------------------------
-# UTILS
+# UTILITIES
 # ---------------------------------------------------------
 def clean_code(x):
     if pd.isna(x): return ""
     x = str(x).strip().upper().replace("–", "-").replace("—", "-")
     return re.sub(r"[^A-Z0-9/\-!]", "", x)
 
-
 def cin7_get(endpoint, params=None):
-    """Generic GET wrapper for Cin7"""
     url = f"{base_url}/{endpoint}"
     try:
         r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
@@ -63,30 +61,38 @@ users_map = get_users_map()
 
 
 # ---------------------------------------------------------
-# SUPPLIER LOOKUP FROM CIN7
+# SUPPLIER (Supplier ID from Supplier table)
 # ---------------------------------------------------------
 def get_supplier_details(name):
     if not name:
-        return {"id": None, "abbr": ""}
+        return {"id": None}
 
     r = cin7_get("v1/Suppliers", params={"where": f"company='{name}'"})
     if r and isinstance(r, list) and len(r) > 0:
-        s = r[0]
-        return {
-            "id": s.get("id"),
-            "abbr": s.get("jobTitle", "").strip().upper()
-        }
+        return {"id": r[0].get("id")}
 
-    return {"id": None, "abbr": ""}
+    return {"id": None}
 
 
 # ---------------------------------------------------------
-# BOM LOOKUP (REAL Cin7 Implementation)
+# CRM SUPPLIER ABBREVIATION (Job Title)
+# ---------------------------------------------------------
+def get_supplier_abbrev(name):
+    if not name:
+        return ""
+
+    r = cin7_get("v1/Contacts", params={"where": f"company='{name}'"})
+    if r and isinstance(r, list) and len(r) > 0:
+        job_title = r[0].get("jobTitle", "")
+        return str(job_title).strip().upper()
+    return ""
+
+
+# ---------------------------------------------------------
+# BOM LOOKUP (via productId)
 # ---------------------------------------------------------
 def get_bom(code):
-    """Get BOM components by productId, not code"""
 
-    # STEP 1: Lookup the product to get its internal ID
     prod = cin7_get("v1/Products", params={"where": f"code='{code}'"})
     if not prod or not isinstance(prod, list) or len(prod) == 0:
         return []
@@ -95,7 +101,6 @@ def get_bom(code):
     if not product_id:
         return []
 
-    # STEP 2: Query BOM Master by productId
     bom = cin7_get("v1/BillsOfMaterials", params={"where": f"productId={product_id}"})
     if not bom or not isinstance(bom, list):
         return []
@@ -114,7 +119,7 @@ def get_bom(code):
 
 
 # ---------------------------------------------------------
-# CONTACT LOOKUP (SO FIELDS)
+# CONTACT LOOKUP FOR SALES ORDERS
 # ---------------------------------------------------------
 def get_contact_data(company_name):
 
@@ -131,32 +136,30 @@ def get_contact_data(company_name):
 
     cleaned = clean_text(company_name)
 
-    # Try match by Company
     r = cin7_get("v1/Contacts", params={"where": f"company='{cleaned}'"})
     if r and isinstance(r, list) and len(r) > 0:
-        c = r[0]
+        contact = r[0]
         return {
-            "projectName": c.get("firstName",""),
-            "salesPersonId": c.get("salesPersonId"),
-            "memberId": c.get("id")
+            "projectName": contact.get("firstName",""),
+            "salesPersonId": contact.get("salesPersonId"),
+            "memberId": contact.get("id")
         }
 
-    # Try match by Account Number
     code = extract_code(company_name)
     r = cin7_get("v1/Contacts", params={"where": f"accountNumber='{code}'"})
     if r and isinstance(r, list) and len(r) > 0:
-        c = r[0]
+        contact = r[0]
         return {
-            "projectName": c.get("firstName",""),
-            "salesPersonId": c.get("salesPersonId"),
-            "memberId": c.get("id")
+            "projectName": contact.get("firstName",""),
+            "salesPersonId": contact.get("salesPersonId"),
+            "memberId": contact.get("id")
         }
 
     return {"projectName": "", "salesPersonId": None, "memberId": None}
 
 
 # ---------------------------------------------------------
-# SAFE MEMBER ID
+# MEMBER ID SAFETY
 # ---------------------------------------------------------
 def resolve_member_id(member_id, branch):
     if member_id and int(member_id) != 0:
@@ -205,17 +208,24 @@ def build_sales_payload(ref, grp):
 
 
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (FULL BOM EXPLOSION)
+# PURCHASE ORDER PAYLOAD (Supplier ID + CRM Abbrev + BOM Explosion)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
 
     supplier = grp["Supplier"].iloc[0]
-    s = get_supplier_details(supplier)
 
-    if not s["id"]:
+    # Supplier ID from Suppliers table
+    s_sup = get_supplier_details(supplier)
+    supplier_id = s_sup["id"]
+
+    if not supplier_id:
         raise Exception(f"Supplier not found in Cin7: '{supplier}'")
 
-    po_ref = f"PO-{ref}{s['abbr']}"
+    # Supplier abbreviation from CRM Contact jobTitle
+    abbr = get_supplier_abbrev(supplier)
+
+    po_ref = f"PO-{ref}{abbr}"
+
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
@@ -227,7 +237,7 @@ def build_po_payload(ref, grp):
 
         bom = get_bom(code)
 
-        if bom:  # parent → explode
+        if bom:
             for c in bom:
                 line_items.append({
                     "code": c["code"],
@@ -243,7 +253,7 @@ def build_po_payload(ref, grp):
 
     payload = [{
         "reference": po_ref,
-        "supplierId": int(s["id"]),
+        "supplierId": int(supplier_id),
         "branchId": branch_id,
         "deliveryAddress": "Hardware Direct Warehouse",
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
@@ -255,7 +265,7 @@ def build_po_payload(ref, grp):
 
 
 # ---------------------------------------------------------
-# PUSH ORDERS TO CIN7
+# PUSH SO / PO
 # ---------------------------------------------------------
 def push_sales_orders(df):
     url = f"{base_url}/v1/SalesOrders?loadboms=false"
@@ -301,14 +311,14 @@ subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
 
 # ---------------------------------------------------------
-# UI — UPLOAD PM FILES
+# UI — UPLOAD
 # ---------------------------------------------------------
 st.header("📤 Upload ProMaster CSV Files")
-pm_files = st.file_uploader("Upload CSV(s)", type=["csv"], accept_multiple_files=True)
+pm_files = st.file_uploader("Upload PM CSV(s)", type=["csv"], accept_multiple_files=True)
 
 if pm_files:
 
-    rows = []
+    buffer = []
 
     for file in pm_files:
         fname = file.name
@@ -317,7 +327,7 @@ if pm_files:
 
         st.subheader(f"📄 {fname}")
 
-        internal_comment = st.text_input(f"Internal comment for {order_ref}", key=f"c-{order_ref}")
+        comment = st.text_input(f"Internal comment for {order_ref}", key=f"c-{order_ref}")
         etd = st.date_input(f"ETD for {order_ref}", datetime.now() + timedelta(days=2))
 
         pm = pd.read_csv(file)
@@ -334,7 +344,6 @@ if pm_files:
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
-        # MERGE PM WITH PRODUCTS
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
 
         # CONTACT LOOKUP
@@ -352,26 +361,24 @@ if pm_files:
         merged["MemberId"] = merged["AccountNumber"].map(mem_map)
         merged["Company"] = merged["AccountNumber"]
 
-        # Supplier from products.csv
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
-        # Build row entries
         for _, r in merged.iterrows():
+
             sup = r["Supplier"]
 
-            rows.append({
+            buffer.append({
                 "Branch": "Avondale",
                 "Sales Rep": r["Sales Rep"],
                 "Project Name": r["Project Name"],
                 "Company": r["Company"],
                 "MemberId": r["MemberId"],
                 "Supplier": sup,
-                "Internal Comments": internal_comment,
+                "Internal Comments": comment,
                 "ETD": etd.strftime("%Y-%m-%d"),
                 "Customer PO No": po_no,
                 "Order Ref": order_ref,
 
-                # Group PO by supplier
                 "Supplier PO Group": f"{order_ref}-{sup}",
 
                 "Item Code": r["PartCode"],
@@ -382,17 +389,17 @@ if pm_files:
                 "OrderFlag": True
             })
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(buffer)
 
-    # Editor Columns
     cols = [
         "Branch", "Sales Rep", "Project Name", "Company", "MemberId",
         "Supplier", "Internal Comments", "ETD",
         "Customer PO No", "Order Ref", "Supplier PO Group",
-        "Item Code", "Product Name", "Item Qty", "Item Price", "OrderFlag"
+        "Item Code", "Product Name", "Item Qty", "Item Price",
+        "OrderFlag"
     ]
 
-    st.subheader("📝 Select Items to Include")
+    st.subheader("📝 Select Items")
     edited = st.data_editor(df[cols], num_rows="dynamic")
 
     final_df = edited[edited["OrderFlag"] == True]
@@ -405,5 +412,5 @@ if pm_files:
     if st.button("🚀 Push Sales Orders"):
         st.json(push_sales_orders(final_df))
 
-    if st.button("📦 Push Purchase Orders (BOM Exploded)"):
+    if st.button("📦 Push Purchase Orders (CRM Abbrev + BOM Explode)"):
         st.json(push_purchase_orders(final_df))
