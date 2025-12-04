@@ -10,8 +10,8 @@ import os
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v35.1", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v35.1 — SO + PO + BOM + Selection + Contact Fix")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v35.2", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v35.2 — SO + PO + BOM + Auto-Supplier")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -29,60 +29,53 @@ branch_Avondale_default_member = 3
 
 
 # ---------------------------------------------------------
-# UTILITY: Clean product codes
+# CLEAN CODE
 # ---------------------------------------------------------
 def clean_code(x):
-    if pd.isna(x):
-        return ""
+    if pd.isna(x): return ""
     x = str(x).strip().upper()
     x = x.replace("–", "-").replace("—", "-")
-    x = re.sub(r"[^A-Z0-9/\-]", "", x)
-    return x
+    return re.sub(r"[^A-Z0-9/\-]", "", x)
 
 
 # ---------------------------------------------------------
-# Cin7 GET Helper
+# CIN7 API
 # ---------------------------------------------------------
 def cin7_get(endpoint, params=None):
     url = f"{base_url}/{endpoint}"
     r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
-    if r.status_code == 200:
-        return r.json()
+    if r.status_code == 200: return r.json()
     return None
 
 
 # ---------------------------------------------------------
-# Get Cin7 Users
+# USERS
 # ---------------------------------------------------------
 def get_users_map():
     users = cin7_get("v1/Users")
-    if not users:
-        return {}
+    if not users: return {}
     return {
         u["id"]: f"{u.get('firstName','')} {u.get('lastName','')}".strip()
         for u in users if u.get("isActive", True)
     }
 
-
 users_map = get_users_map()
 
 
 # ---------------------------------------------------------
-# Supplier lookup (abbr = Job Title)
+# SUPPLIER LOOKUP FROM CIN7
 # ---------------------------------------------------------
 def get_supplier_details(name):
+    if not name: return {"id": None, "abbr": ""}
     res = cin7_get("v1/Suppliers", params={"where": f"company='{name}'"})
     if res and isinstance(res, list) and len(res) > 0:
         s = res[0]
-        return {
-            "id": s.get("id"),
-            "abbr": s.get("jobTitle", "").strip().upper()
-        }
+        return {"id": s.get("id"), "abbr": s.get("jobTitle", "").strip().upper()}
     return {"id": None, "abbr": ""}
 
 
 # ---------------------------------------------------------
-# BOM lookup
+# BOM LOOKUP
 # ---------------------------------------------------------
 def get_bom(code):
     res = cin7_get("v1/BillsOfMaterials", params={"where": f"code='{code}'"})
@@ -92,18 +85,16 @@ def get_bom(code):
 
 
 # ---------------------------------------------------------
-# Contact Lookup logic
+# CONTACT LOOKUP (for SO fields)
 # ---------------------------------------------------------
 def get_contact_data(company_name):
 
     def clean_text(s):
-        if not s:
-            return ""
+        if not s: return ""
         return re.sub(r"\s+", " ", str(s).upper().strip())
 
     def extract_code(s):
-        if not s:
-            return ""
+        if not s: return ""
         return str(s).split("-")[-1].strip().upper()
 
     if not company_name:
@@ -111,23 +102,21 @@ def get_contact_data(company_name):
 
     cleaned = clean_text(company_name)
 
-    # Try company
     r = cin7_get("v1/Contacts", params={"where": f"company='{cleaned}'"})
     if r and isinstance(r, list) and len(r) > 0:
         c = r[0]
         return {
-            "projectName": c.get("firstName", ""),
+            "projectName": c.get("firstName",""),
             "salesPersonId": c.get("salesPersonId"),
             "memberId": c.get("id")
         }
 
-    # Try account number
     code = extract_code(company_name)
     r = cin7_get("v1/Contacts", params={"where": f"accountNumber='{code}'"})
     if r and isinstance(r, list) and len(r) > 0:
         c = r[0]
         return {
-            "projectName": c.get("firstName", ""),
+            "projectName": c.get("firstName",""),
             "salesPersonId": c.get("salesPersonId"),
             "memberId": c.get("id")
         }
@@ -136,11 +125,10 @@ def get_contact_data(company_name):
 
 
 # ---------------------------------------------------------
-# Safe MemberId
+# SAFE MEMBERID
 # ---------------------------------------------------------
 def resolve_member_id(member_id, branch_name):
-    if member_id and int(member_id) != 0:
-        return int(member_id)
+    if member_id and int(member_id) != 0: return int(member_id)
     return branch_Hamilton_default_member if branch_name == "Hamilton" else branch_Avondale_default_member
 
 
@@ -151,10 +139,8 @@ def build_sales_payload(ref, grp):
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
-
     rep = grp["Sales Rep"].iloc[0]
     sales_id = next((i for i, n in users_map.items() if n == rep), None)
-
     mem = grp["MemberId"].iloc[0]
 
     payload = [{
@@ -187,7 +173,7 @@ def build_sales_payload(ref, grp):
 
 
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (with BOM expansion + Supplier Abbrev)
+# PURCHASE ORDER PAYLOAD (BOM + Supplier from Products.csv)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
 
@@ -195,7 +181,7 @@ def build_po_payload(ref, grp):
     sup = get_supplier_details(supplier_name)
 
     if not sup["id"]:
-        raise Exception(f"Supplier not found in Cin7: {supplier_name}")
+        raise Exception(f"Supplier not found in Cin7: '{supplier_name}'")
 
     po_ref = f"PO-{ref}{sup['abbr']}"
 
@@ -213,7 +199,6 @@ def build_po_payload(ref, grp):
         bom = get_bom(code)
 
         if bom:
-            # EXPLODE BOM
             for comp in bom:
                 line_items.append({
                     "code": comp["code"],
@@ -245,34 +230,30 @@ def build_po_payload(ref, grp):
 # ---------------------------------------------------------
 def push_sales_orders(df):
     url = f"{base_url}/v1/SalesOrders?loadboms=false"
-    heads = {"Content-Type": "application/json"}
     results = []
+    heads = {"Content-Type": "application/json"}
 
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_sales_payload(ref, grp)
-            r = requests.post(
-                url, headers=heads, data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key)
-            )
-            results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                auth=HTTPBasicAuth(api_username, api_key))
+            results.append({"SO Ref": ref, "Success": r.status_code == 200, "Response": r.text})
         except Exception as e:
-            results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
+            results.append({"SO Ref": ref, "Success": False, "Error": str(e)})
     return results
 
 
 def push_purchase_orders(df):
     url = f"{base_url}/v1/PurchaseOrders"
-    heads = {"Content-Type": "application/json"}
     results = []
+    heads = {"Content-Type": "application/json"}
 
     for ref, grp in df.groupby("Supplier PO Group"):
         try:
             payload = build_po_payload(ref, grp)
-            r = requests.post(
-                url, headers=heads, data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key)
-            )
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                auth=HTTPBasicAuth(api_username, api_key))
             results.append({"PO Ref": ref, "Success": r.status_code == 200, "Response": r.text})
         except Exception as e:
             results.append({"PO Ref": ref, "Success": False, "Error": str(e)})
@@ -291,29 +272,32 @@ subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
 
 # ---------------------------------------------------------
-# UI — Upload
+# UI — Upload Files
 # ---------------------------------------------------------
 st.header("📤 Upload ProMaster CSV Files")
 pm_files = st.file_uploader("Upload CSV(s)", type=["csv"], accept_multiple_files=True)
 
 if pm_files:
 
-    all_rows = []
+    buffer = []
 
     for file in pm_files:
         fname = file.name
-        order_ref = re.sub(r"_ShipmentProductWithCostsAndPrice\.csv$", "", fname, flags=re.I)
+        order_ref = re.sub(
+            r"_ShipmentProductWithCostsAndPrice\.csv$",
+            "",
+            fname,
+            flags=re.I
+        )
         po_no = order_ref.split(".")[0]
 
         st.subheader(f"📄 {fname}")
 
-        internal_comment = st.text_input(f"Internal comment for {order_ref}", key=f"c-{order_ref}")
+        comment = st.text_input(f"Internal comment for {order_ref}", key=f"c-{order_ref}")
         etd = st.date_input(f"ETD for {order_ref}", datetime.now() + timedelta(days=2))
-        supplier = st.text_input(f"Supplier for {order_ref}", key=f"supp-{order_ref}")
 
         pm = pd.read_csv(file)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
-        pm["Supplier"] = supplier
 
         # SUBSTITUTIONS
         pm_sub = pm[pm["PartCode"].isin(subs["Code"].values)]
@@ -326,14 +310,13 @@ if pm_files:
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
-        # MERGE WITH PRODUCTS
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
 
-        # CONTACT LOOKUP for Sales Order fields
-        acc_list = merged["AccountNumber"].dropna().unique()
+        # CONTACT LOOKUP
+        accs = merged["AccountNumber"].dropna().unique()
 
         proj_map, rep_map, mem_map = {}, {}, {}
-        for acc in acc_list:
+        for acc in accs:
             d = get_contact_data(acc)
             proj_map[acc] = d["projectName"]
             rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
@@ -344,20 +327,25 @@ if pm_files:
         merged["MemberId"] = merged["AccountNumber"].map(mem_map)
         merged["Company"] = merged["AccountNumber"]
 
-        # Build output rows
+        # Supplier comes directly from Products.csv
+        merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
+
         for _, r in merged.iterrows():
-            all_rows.append({
+            buffer.append({
                 "Branch": "Avondale",
                 "Sales Rep": r["Sales Rep"],
                 "Project Name": r["Project Name"],
                 "Company": r["Company"],
                 "MemberId": r["MemberId"],
-                "Supplier": supplier,
-                "Internal Comments": internal_comment,
+                "Supplier": r["Supplier"],
+                "Internal Comments": comment,
                 "ETD": etd.strftime("%Y-%m-%d"),
                 "Customer PO No": po_no,
                 "Order Ref": order_ref,
-                "Supplier PO Group": order_ref,
+
+                # Group PO by order + supplier
+                "Supplier PO Group": f"{order_ref}-{r['Supplier']}",
+
                 "Item Code": r["PartCode"],
                 "Product Name": r.get("Product Name", ""),
                 "Item Qty": r.get("ProductQuantity", 0),
@@ -365,9 +353,8 @@ if pm_files:
                 "OrderFlag": True
             })
 
-    df = pd.DataFrame(all_rows)
+    df = pd.DataFrame(buffer)
 
-    # SHOW EDITOR WITH ALL IMPORTANT COLUMNS EXPLICIT
     cols = [
         "Branch", "Sales Rep", "Project Name", "Company", "MemberId",
         "Supplier", "Internal Comments", "ETD",
@@ -377,10 +364,9 @@ if pm_files:
     ]
 
     st.subheader("📝 Select Items to Order")
-    edited_df = st.data_editor(df[cols], num_rows="dynamic")
+    edited = st.data_editor(df[cols], num_rows="dynamic")
 
-    # Only order selected items
-    final_df = edited_df[edited_df["OrderFlag"] == True]
+    final_df = edited[edited["OrderFlag"] == True]
 
     st.subheader("📦 Final Preview")
     st.dataframe(final_df)
@@ -390,6 +376,6 @@ if pm_files:
     if st.button("🚀 Push Sales Orders"):
         st.json(push_sales_orders(final_df))
 
-    if st.button("📦 Push Purchase Orders (BOM Explode)"):
+    if st.button("📦 Push Purchase Orders (BOM Explode + Auto Supplier)"):
         st.json(push_purchase_orders(final_df))
 
