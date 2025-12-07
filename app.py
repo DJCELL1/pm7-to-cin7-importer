@@ -218,6 +218,12 @@ def build_sales_payload(ref, grp):
 # PURCHASE ORDER PAYLOAD (BOM explode + fuzzy supplier match)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
+    # ref is the Supplier PO Group, e.g. "Q33581E.S10-Dormakaba New Zealand Ltd"
+    raw_ref = str(ref)
+    if "-" in raw_ref:
+        base_ref = raw_ref.split("-", 1)[0]  # "Q33581E.S10"
+    else:
+        base_ref = raw_ref
 
     supplier_name = grp["Supplier"].iloc[0]
     sup = get_supplier_details(supplier_name)
@@ -225,8 +231,9 @@ def build_po_payload(ref, grp):
     if not sup["id"]:
         raise Exception(f"Supplier not found in Cin7: '{supplier_name}'")
 
-    supplier_abbr = supplier_name[:4].upper() if supplier_name else ""
-    po_ref = f"PO-{ref}{supplier_abbr}"
+    # Use cleaned supplier name to avoid rubbish, then take first 4 chars
+    supplier_abbr = clean_supplier_name(supplier_name)[:4] if supplier_name else ""
+    po_ref = f"{base_ref}{supplier_abbr}"  # e.g. Q33581E.S10DORM
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
@@ -234,7 +241,6 @@ def build_po_payload(ref, grp):
     line_items = []
 
     for _, r in grp.iterrows():
-
         code = str(r["Item Code"])
         qty = float(r["Item Qty"] or 0)
         price = float(r["Item Price"] or 0)
@@ -307,23 +313,30 @@ def push_purchase_orders(df):
     for ref, grp in df.groupby("Supplier PO Group"):
         try:
             payload = build_po_payload(ref, grp)
-            r = requests.post(url, headers=heads, data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key))
+            r = requests.post(
+                url,
+                headers=heads,
+                data=json.dumps(payload),
+                auth=HTTPBasicAuth(api_username, api_key)
+            )
+
+            po_reference = payload[0].get("reference", str(ref))
 
             results.append({
-                "PO Ref": ref,
+                "PO Ref": po_reference,
                 "Success": r.status_code == 200,
                 "Response": r.text
             })
 
         except Exception as e:
             results.append({
-                "PO Ref": ref,
+                "PO Ref": str(ref),
                 "Success": False,
                 "Error": str(e)
             })
 
     return results
+
 # ---------------------------------------------------------
 # LOAD STATIC FILES
 # ---------------------------------------------------------
