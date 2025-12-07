@@ -61,8 +61,10 @@ def get_users_map():
 users_map = get_users_map()
 
 # ---------------------------------------------------------
-# FUZZY SUPPLIER LOOKUP ENGINE
+# FUZZY SUPPLIER LOOKUP ENGINE (safe for older pandas)
 # ---------------------------------------------------------
+import re
+
 @st.cache_data
 def load_all_suppliers():
     suppliers = cin7_get("v1/Suppliers")
@@ -70,29 +72,29 @@ def load_all_suppliers():
         return pd.DataFrame(columns=["id", "company", "company_clean"])
 
     df = pd.DataFrame(suppliers)
-    df["company_clean"] = (
-        df["company"]
-        .astype(str)
-        .str.upper()
-        .str.strip()
-        .str.replace("&", "AND")
-        .str.replace("LIMITED", "LTD")
-        .str.replace(r"[^A-Z0-9]", "", regex=True)
-    )
+
+    def clean_text(x):
+        if not x:
+            return ""
+        x = str(x).upper().strip()
+        x = x.replace("&", "AND")
+        x = x.replace("LIMITED", "LTD")
+        x = re.sub(r"[^A-Z0-9]", "", x)   # ← FIXED: no regex=True
+        return x
+
+    df["company_clean"] = df["company"].apply(clean_text)
     return df[["id", "company", "company_clean"]]
 
-suppliers_df = load_all_suppliers()
 
 def clean_supplier_name(name: str):
-    if not name: return ""
-    return (
-        str(name)
-        .upper()
-        .strip()
-        .replace("&", "AND")
-        .replace("LIMITED", "LTD")
-        .replace(r"[^A-Z0-9]", "", regex=True)
-    )
+    if not name:
+        return ""
+    x = str(name).upper().strip()
+    x = x.replace("&", "AND")
+    x = x.replace("LIMITED", "LTD")
+    x = re.sub(r"[^A-Z0-9]", "", x)      # ← FIXED
+    return x
+
 
 def get_supplier_details(name):
     if not name:
@@ -100,22 +102,20 @@ def get_supplier_details(name):
 
     cleaned = clean_supplier_name(name)
 
-    # Exact cleaned match
     exact = suppliers_df[suppliers_df["company_clean"] == cleaned]
     if len(exact) > 0:
         return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
 
-    # Contains match
-    contains = suppliers_df[suppliers_df["company_clean"].str.contains(cleaned)]
+    contains = suppliers_df[suppliers_df["company_clean"].str.contains(cleaned, na=False)]
     if len(contains) > 0:
         return {"id": int(contains.iloc[0]["id"]), "abbr": name[:4].upper()}
 
-    # Reverse contains
     contains_rev = suppliers_df[suppliers_df["company_clean"].apply(lambda x: cleaned in x)]
     if len(contains_rev) > 0:
         return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
 
     return {"id": None, "abbr": ""}
+
 # ---------------------------------------------------------
 # BOM LOOKUP
 # ---------------------------------------------------------
