@@ -115,6 +115,62 @@ def get_supplier_details(name):
         return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
 
     return {"id": None, "abbr": ""}
+@st.cache_data
+def load_all_suppliers():
+    suppliers = cin7_get("v1/Suppliers")
+    if not suppliers:
+        return pd.DataFrame(columns=["id", "company", "company_clean"])
+
+    df = pd.DataFrame(suppliers)
+
+    def clean_text(x):
+        if not x:
+            return ""
+        x = str(x).upper().strip()
+        x = x.replace("&", "AND")
+        x = x.replace("LIMITED", "LTD")
+        x = re.sub(r"[^A-Z0-9]", "", x)
+        return x
+
+    df["company_clean"] = df["company"].apply(clean_text)
+    return df[["id", "company", "company_clean"]]
+
+
+def clean_supplier_name(name: str):
+    if not name:
+        return ""
+    x = str(name).upper().strip()
+    x = x.replace("&", "AND")
+    x = x.replace("LIMITED", "LTD")
+    x = re.sub(r"[^A-Z0-9]", "", x)
+    return x
+
+
+# ******* ADD THIS LINE — YOU FORGOT IT ********
+suppliers_df = load_all_suppliers()
+# ***********************************************
+
+
+def get_supplier_details(name):
+    if not name:
+        return {"id": None, "abbr": ""}
+
+    cleaned = clean_supplier_name(name)
+
+    exact = suppliers_df[suppliers_df["company_clean"] == cleaned]
+    if len(exact) > 0:
+        return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
+
+    contains = suppliers_df[suppliers_df["company_clean"].str.contains(cleaned, na=False)]
+    if len(contains) > 0:
+        return {"id": int(contains.iloc[0]["id"]), "abbr": name[:4].upper()}
+
+    contains_rev = suppliers_df[suppliers_df["company_clean"].apply(lambda x: cleaned in x)]
+    if len(contains_rev) > 0:
+        return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
+
+    return {"id": None, "abbr": ""}
+
 
 # ---------------------------------------------------------
 # BOM LOOKUP
