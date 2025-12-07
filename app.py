@@ -27,7 +27,6 @@ branch_Avondale = cin7.get("branch_Avondale", 3)
 branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
-
 # ---------------------------------------------------------
 # CLEAN CODE
 # ---------------------------------------------------------
@@ -37,23 +36,23 @@ def clean_code(x):
     x = x.replace("–", "-").replace("—", "-")
     return re.sub(r"[^A-Z0-9/\-]", "", x)
 
-
 # ---------------------------------------------------------
-# CIN7 API
+# CIN7 API WRAPPER
 # ---------------------------------------------------------
 def cin7_get(endpoint, params=None):
     url = f"{base_url}/{endpoint}"
     r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
-    if r.status_code == 200: return r.json()
+    if r.status_code == 200:
+        return r.json()
     return None
-
 
 # ---------------------------------------------------------
 # USERS
 # ---------------------------------------------------------
 def get_users_map():
     users = cin7_get("v1/Users")
-    if not users: return {}
+    if not users:
+        return {}
     return {
         u["id"]: f"{u.get('firstName','')} {u.get('lastName','')}".strip()
         for u in users if u.get("isActive", True)
@@ -61,19 +60,62 @@ def get_users_map():
 
 users_map = get_users_map()
 
+# ---------------------------------------------------------
+# FUZZY SUPPLIER LOOKUP ENGINE
+# ---------------------------------------------------------
+@st.cache_data
+def load_all_suppliers():
+    suppliers = cin7_get("v1/Suppliers")
+    if not suppliers:
+        return pd.DataFrame(columns=["id", "company", "company_clean"])
 
-# ---------------------------------------------------------
-# SUPPLIER LOOKUP FROM CIN7
-# ---------------------------------------------------------
+    df = pd.DataFrame(suppliers)
+    df["company_clean"] = (
+        df["company"]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .str.replace("&", "AND")
+        .str.replace("LIMITED", "LTD")
+        .str.replace(r"[^A-Z0-9]", "", regex=True)
+    )
+    return df[["id", "company", "company_clean"]]
+
+suppliers_df = load_all_suppliers()
+
+def clean_supplier_name(name: str):
+    if not name: return ""
+    return (
+        str(name)
+        .upper()
+        .strip()
+        .replace("&", "AND")
+        .replace("LIMITED", "LTD")
+        .replace(r"[^A-Z0-9]", "", regex=True)
+    )
+
 def get_supplier_details(name):
-    if not name: return {"id": None, "abbr": ""}
-    res = cin7_get("v1/Suppliers", params={"where": f"company='{name}'"})
-    if res and isinstance(res, list) and len(res) > 0:
-        s = res[0]
-        return {"id": s.get("id"), "abbr": s.get("jobTitle", "").strip().upper()}
+    if not name:
+        return {"id": None, "abbr": ""}
+
+    cleaned = clean_supplier_name(name)
+
+    # Exact cleaned match
+    exact = suppliers_df[suppliers_df["company_clean"] == cleaned]
+    if len(exact) > 0:
+        return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
+
+    # Contains match
+    contains = suppliers_df[suppliers_df["company_clean"].str.contains(cleaned)]
+    if len(contains) > 0:
+        return {"id": int(contains.iloc[0]["id"]), "abbr": name[:4].upper()}
+
+    # Reverse contains
+    contains_rev = suppliers_df[suppliers_df["company_clean"].apply(lambda x: cleaned in x)]
+    if len(contains_rev) > 0:
+        return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
+
     return {"id": None, "abbr": ""}
-
-
 # ---------------------------------------------------------
 # BOM LOOKUP
 # ---------------------------------------------------------
@@ -82,7 +124,6 @@ def get_bom(code):
     if res and isinstance(res, list) and len(res) > 0:
         return res[0].get("components", [])
     return []
-
 
 # ---------------------------------------------------------
 # CONTACT LOOKUP (for SO fields)
@@ -102,6 +143,7 @@ def get_contact_data(company_name):
 
     cleaned = clean_text(company_name)
 
+    # Search by company (exact)
     r = cin7_get("v1/Contacts", params={"where": f"company='{cleaned}'"})
     if r and isinstance(r, list) and len(r) > 0:
         c = r[0]
@@ -111,6 +153,7 @@ def get_contact_data(company_name):
             "memberId": c.get("id")
         }
 
+    # Fallback search: account number
     code = extract_code(company_name)
     r = cin7_get("v1/Contacts", params={"where": f"accountNumber='{code}'"})
     if r and isinstance(r, list) and len(r) > 0:
@@ -123,14 +166,13 @@ def get_contact_data(company_name):
 
     return {"projectName": "", "salesPersonId": None, "memberId": None}
 
-
 # ---------------------------------------------------------
 # SAFE MEMBERID
 # ---------------------------------------------------------
 def resolve_member_id(member_id, branch_name):
-    if member_id and int(member_id) != 0: return int(member_id)
+    if member_id and int(member_id) != 0:
+        return int(member_id)
     return branch_Hamilton_default_member if branch_name == "Hamilton" else branch_Avondale_default_member
-
 
 # ---------------------------------------------------------
 # SALES ORDER PAYLOAD
@@ -139,8 +181,10 @@ def build_sales_payload(ref, grp):
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
+
     rep = grp["Sales Rep"].iloc[0]
     sales_id = next((i for i, n in users_map.items() if n == rep), None)
+
     mem = grp["MemberId"].iloc[0]
 
     payload = [{
@@ -170,10 +214,8 @@ def build_sales_payload(ref, grp):
     }]
 
     return payload
-
-
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (BOM + Supplier from Products.csv)
+# PURCHASE ORDER PAYLOAD (BOM explode + fuzzy supplier match)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
 
@@ -225,9 +267,8 @@ def build_po_payload(ref, grp):
 
     return payload
 
-
 # ---------------------------------------------------------
-# PUSH SO & PO
+# PUSH SALES ORDERS
 # ---------------------------------------------------------
 def push_sales_orders(df):
     url = f"{base_url}/v1/SalesOrders?loadboms=false"
@@ -239,12 +280,25 @@ def push_sales_orders(df):
             payload = build_sales_payload(ref, grp)
             r = requests.post(url, headers=heads, data=json.dumps(payload),
                 auth=HTTPBasicAuth(api_username, api_key))
-            results.append({"SO Ref": ref, "Success": r.status_code == 200, "Response": r.text})
+
+            results.append({
+                "SO Ref": ref,
+                "Success": r.status_code == 200,
+                "Response": r.text
+            })
+
         except Exception as e:
-            results.append({"SO Ref": ref, "Success": False, "Error": str(e)})
+            results.append({
+                "SO Ref": ref,
+                "Success": False,
+                "Error": str(e)
+            })
+
     return results
 
-
+# ---------------------------------------------------------
+# PUSH PURCHASE ORDERS
+# ---------------------------------------------------------
 def push_purchase_orders(df):
     url = f"{base_url}/v1/PurchaseOrders"
     results = []
@@ -255,12 +309,21 @@ def push_purchase_orders(df):
             payload = build_po_payload(ref, grp)
             r = requests.post(url, headers=heads, data=json.dumps(payload),
                 auth=HTTPBasicAuth(api_username, api_key))
-            results.append({"PO Ref": ref, "Success": r.status_code == 200, "Response": r.text})
+
+            results.append({
+                "PO Ref": ref,
+                "Success": r.status_code == 200,
+                "Response": r.text
+            })
+
         except Exception as e:
-            results.append({"PO Ref": ref, "Success": False, "Error": str(e)})
+            results.append({
+                "PO Ref": ref,
+                "Success": False,
+                "Error": str(e)
+            })
+
     return results
-
-
 # ---------------------------------------------------------
 # LOAD STATIC FILES
 # ---------------------------------------------------------
@@ -270,7 +333,6 @@ subs = pd.read_excel("Substitutes.xlsx")
 products["Code"] = products["Code"].apply(clean_code)
 subs["Code"] = subs["Code"].apply(clean_code)
 subs["Substitute"] = subs["Substitute"].apply(clean_code)
-
 
 # ---------------------------------------------------------
 # UI — Upload Files
@@ -284,12 +346,15 @@ if pm_files:
 
     for file in pm_files:
         fname = file.name
+
+        # Remove suffix: "_ShipmentProductWithCostsAndPrice.csv"
         order_ref = re.sub(
             r"_ShipmentProductWithCostsAndPrice\.csv$",
             "",
             fname,
             flags=re.I
         )
+
         po_no = order_ref.split(".")[0]
 
         st.subheader(f"📄 {fname}")
@@ -300,7 +365,9 @@ if pm_files:
         pm = pd.read_csv(file)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
+        # ---------------------------------------------------------
         # SUBSTITUTIONS
+        # ---------------------------------------------------------
         pm_sub = pm[pm["PartCode"].isin(subs["Code"].values)]
         if not pm_sub.empty:
             st.info("♻️ Substitutions Found:")
@@ -311,9 +378,14 @@ if pm_files:
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
+        # ---------------------------------------------------------
+        # MERGE WITH PRODUCTS
+        # ---------------------------------------------------------
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
 
+        # ---------------------------------------------------------
         # CONTACT LOOKUP
+        # ---------------------------------------------------------
         accs = merged["AccountNumber"].dropna().unique()
 
         proj_map, rep_map, mem_map = {}, {}, {}
@@ -328,9 +400,12 @@ if pm_files:
         merged["MemberId"] = merged["AccountNumber"].map(mem_map)
         merged["Company"] = merged["AccountNumber"]
 
-        # Supplier comes directly from Products.csv
+        # Supplier comes from Products.csv
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
+        # ---------------------------------------------------------
+        # BUILD BUFFER ROWS
+        # ---------------------------------------------------------
         for _, r in merged.iterrows():
             buffer.append({
                 "Branch": "Avondale",
@@ -354,6 +429,9 @@ if pm_files:
                 "OrderFlag": True
             })
 
+    # ---------------------------------------------------------
+    # BUILD DATAFRAME
+    # ---------------------------------------------------------
     df = pd.DataFrame(buffer)
 
     cols = [
