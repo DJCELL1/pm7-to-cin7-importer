@@ -183,7 +183,8 @@ def build_po_payload(ref, grp):
     if not sup["id"]:
         raise Exception(f"Supplier not found in Cin7: '{supplier_name}'")
 
-    po_ref = f"PO-{ref}{sup['abbr']}"
+    supplier_abbr = supplier_name[:4].upper() if supplier_name else ""
+    po_ref = f"PO-{ref}{supplier_abbr}"
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
