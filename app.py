@@ -220,10 +220,10 @@ def build_sales_payload(ref, grp):
 
     return payload
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (Uses PO Final Ref)
+# PURCHASE ORDER PAYLOAD
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # ref is already the final PO reference "PO-QxxxxSUPP"
+    # ref is now the PO Order Ref: "PO-QxxxxSUPP"
     po_ref = str(ref)
 
     supplier_name = grp["Supplier"].iloc[0]
@@ -275,6 +275,10 @@ def build_po_payload(ref, grp):
 # PUSH SALES ORDERS
 # ---------------------------------------------------------
 def push_sales_orders(df):
+
+    df = df.copy()
+    df["Order Ref"] = df["SO_OrderRef"]   # <-- This is the SO format
+
     url = f"{base_url}/v1/SalesOrders?loadboms=false"
     results = []
     heads = {"Content-Type": "application/json"}
@@ -309,12 +313,15 @@ def push_sales_orders(df):
 # PUSH PURCHASE ORDERS
 # ---------------------------------------------------------
 def push_purchase_orders(df):
+
+    df = df.copy()
+    df["Order Ref"] = df["PO_OrderRef"]   # <-- This is the PO format
+
     url = f"{base_url}/v1/PurchaseOrders"
     results = []
     heads = {"Content-Type": "application/json"}
 
-    # Group PO rows by PO Final Ref
-    for ref, grp in df.groupby("PO Final Ref"):
+    for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_po_payload(ref, grp)
 
@@ -325,17 +332,15 @@ def push_purchase_orders(df):
                 auth=HTTPBasicAuth(api_username, api_key)
             )
 
-            po_reference = payload[0].get("reference", str(ref))
-
             results.append({
-                "PO Ref": po_reference,
+                "PO Ref": ref,
                 "Success": r.status_code == 200,
                 "Response": r.text
             })
 
         except Exception as e:
             results.append({
-                "PO Ref": str(ref),
+                "PO Ref": ref,
                 "Success": False,
                 "Error": str(e)
             })
@@ -364,7 +369,7 @@ if pm_files:
     for file in pm_files:
         fname = file.name
 
-        # Base order reference (Sales Order Ref)
+        # Sales Order base reference
         order_ref = re.sub(
             r"_ShipmentProductWithCostsAndPrice\.csv$",
             "",
@@ -410,18 +415,14 @@ if pm_files:
         merged["Sales Rep"] = merged["AccountNumber"].map(rep_map)
         merged["MemberId"] = merged["AccountNumber"].map(mem_map)
         merged["Company"] = merged["AccountNumber"]
-
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
         # ---------------------------------------------------------
-        # BUILD BUFFER ROWS (PO Final Ref created here)
+        # BUILD BUFFER ROWS — Dual Ref System
         # ---------------------------------------------------------
         for _, r in merged.iterrows():
             supplier = r["Supplier"]
             abbr = clean_supplier_name(supplier)[:4] if supplier else ""
-
-            # FINAL PO REFERENCE 
-            po_final = f"PO-{order_ref}{abbr}"
 
             buffer.append({
                 "Branch": "Avondale",
@@ -434,11 +435,11 @@ if pm_files:
                 "ETD": etd.strftime("%Y-%m-%d"),
                 "Customer PO No": po_no,
 
-                # Sales Order uses this
-                "Order Ref": order_ref,
+                # Sales Order Ref (simple)
+                "SO_OrderRef": order_ref,
 
-                # Purchase Order uses this
-                "PO Final Ref": po_final,
+                # Purchase Order Ref (formatted)
+                "PO_OrderRef": f"PO-{order_ref}{abbr}",
 
                 "Item Code": r["PartCode"],
                 "Product Name": r.get("Product Name", ""),
@@ -455,7 +456,9 @@ if pm_files:
     cols = [
         "Branch", "Sales Rep", "Project Name", "Company", "MemberId",
         "Supplier", "Internal Comments", "ETD",
-        "Customer PO No", "Order Ref", "PO Final Ref",
+        "Customer PO No",
+        "SO_OrderRef",         # visible, editable
+        "PO_OrderRef",         # visible, editable
         "Item Code", "Product Name", "Item Qty", "Item Price",
         "OrderFlag"
     ]
