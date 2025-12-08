@@ -139,6 +139,7 @@ def get_supplier_details(name):
 # ---------------------------------------------------------
 # BOM LOOKUP
 # ---------------------------------------------------------
+
 def get_bom(code):
     # First: find BOM master ID
     search = cin7_get("v1/BomMasters", params={"where": f"code='{code}'"})
@@ -254,45 +255,59 @@ def build_sales_payload(ref, grp):
 # PO PAYLOAD
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
+    # Get supplier details using fuzzy match system
     supplier = grp["Supplier"].iloc[0]
     sup = get_supplier_details(supplier)
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
-    # Build line items with BOM support
+    # ============================
+    # BUILD LINE ITEMS
+    # ============================
     line_items = []
-    for _, r in grp.iterrows():
-        code = r["Item Code"]
-        qty = float(r["Item Qty"])
-        price = float(r["Item Cost"])
 
-        bom = get_bom(code)
-        if bom:
-            for comp in bom:
+    for _, r in grp.iterrows():
+        parent_code = r["Item Code"]
+        qty_ordered = float(r["Item Qty"])
+        price_parent = float(r["Item Cost"])
+
+        # --- Try BOM ---
+        bom_components = get_bom(parent_code)
+
+        if bom_components:
+            # Parent has BOM, explode it
+            for comp in bom_components:
+                comp_code = comp.get("code")
+                comp_qty = comp.get("quantity", 1)
+                comp_price = comp.get("unitPrice", 0)
+
                 line_items.append({
-                    "code": comp["code"],
-                    "qty": comp["quantity"] * qty,
-                    "unitPrice": comp.get("unitPrice", 0)
+                    "code": comp_code,
+                    "qty": comp_qty * qty_ordered,
+                    "unitPrice": comp_price
                 })
         else:
+            # No BOM → use parent product directly
             line_items.append({
-                "code": code,
-                "qty": qty,
-                "unitPrice": price
+                "code": parent_code,
+                "qty": qty_ordered,
+                "unitPrice": price_parent
             })
 
+    # ============================
+    # FINAL PAYLOAD
+    # ============================
     return [{
         "reference": ref,
         "supplierId": sup["id"],
         "branchId": branch_id,
 
+        # Cin7 requires a memberId but suppliers don't have one
         "memberId": sup["id"],
 
-        # This is the actual PO creator
+        # PO creator
         "staffId": added_by_id,
-
-        # Added for consistency with SOs
         "enteredById": added_by_id,
 
         "deliveryAddress": "Hardware Direct Warehouse",
@@ -301,7 +316,6 @@ def build_po_payload(ref, grp):
 
         "lineItems": line_items
     }]
-
 # ---------------------------------------------------------
 # PUSH SO
 # ---------------------------------------------------------
