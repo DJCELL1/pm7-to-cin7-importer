@@ -223,7 +223,8 @@ def build_sales_payload(ref, grp):
 # PURCHASE ORDER PAYLOAD (Correct PO ref logic)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # ref is ALREADY the final PO reference: e.g. "Q33581E.S10ALLE"
+    # ref is already something like: "PO-Q33581E.S10ALLE"
+    # Just use it exactly as-is
     po_ref = str(ref)
 
     supplier_name = grp["Supplier"].iloc[0]
@@ -311,7 +312,7 @@ def push_purchase_orders(df):
     results = []
     heads = {"Content-Type": "application/json"}
 
-    for ref, grp in df.groupby("Supplier PO Group"):
+    for ref, grp in df.groupby("PO Order Ref"):
         try:
             payload = build_po_payload(ref, grp)
 
@@ -338,7 +339,6 @@ def push_purchase_orders(df):
             })
 
     return results
-
 # ---------------------------------------------------------
 # LOAD STATIC FILES
 # ---------------------------------------------------------
@@ -362,7 +362,6 @@ if pm_files:
     for file in pm_files:
         fname = file.name
 
-        # Remove suffix: "_ShipmentProductWithCostsAndPrice.csv"
         order_ref = re.sub(
             r"_ShipmentProductWithCostsAndPrice\.csv$",
             "",
@@ -393,14 +392,8 @@ if pm_files:
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
-        # ---------------------------------------------------------
-        # MERGE WITH PRODUCTS
-        # ---------------------------------------------------------
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
 
-        # ---------------------------------------------------------
-        # CONTACT LOOKUP
-        # ---------------------------------------------------------
         accs = merged["AccountNumber"].dropna().unique()
 
         proj_map, rep_map, mem_map = {}, {}, {}
@@ -415,15 +408,16 @@ if pm_files:
         merged["MemberId"] = merged["AccountNumber"].map(mem_map)
         merged["Company"] = merged["AccountNumber"]
 
-        # Supplier from Products.csv
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
         # ---------------------------------------------------------
-        # BUILD BUFFER ROWS — FIXED PO REFERENCE HERE
+        # BUILD BUFFER ROWS — FINAL PO REF WITH PREFIX
         # ---------------------------------------------------------
         for _, r in merged.iterrows():
             supplier = r["Supplier"]
             abbr = clean_supplier_name(supplier)[:4] if supplier else ""
+
+            final_po_ref = f"PO-{order_ref}{abbr}"
 
             buffer.append({
                 "Branch": "Avondale",
@@ -437,8 +431,7 @@ if pm_files:
                 "Customer PO No": po_no,
                 "Order Ref": order_ref,
 
-                # FINAL PO REF — used directly by build_po_payload()
-                "Supplier PO Group": f"{order_ref}{abbr}",
+                "PO Order Ref": final_po_ref,
 
                 "Item Code": r["PartCode"],
                 "Product Name": r.get("Product Name", ""),
@@ -455,7 +448,7 @@ if pm_files:
     cols = [
         "Branch", "Sales Rep", "Project Name", "Company", "MemberId",
         "Supplier", "Internal Comments", "ETD",
-        "Customer PO No", "Order Ref", "Supplier PO Group",
+        "Customer PO No", "Order Ref", "PO Order Ref",
         "Item Code", "Product Name", "Item Qty", "Item Price",
         "OrderFlag"
     ]
@@ -475,6 +468,4 @@ if pm_files:
 
     if st.button("📦 Push Purchase Orders (BOM Explode + Auto Supplier)"):
         st.json(push_purchase_orders(final_df))
-
-
 
