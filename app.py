@@ -472,26 +472,4 @@ if pm_files:
         st.write("RAW RESPONSE:", res)
         st.json(res)
 
-    # ---------------------------------------------------------
-    # PURCHASE ORDERS TABLE
-    # ---------------------------------------------------------
-    st.header("📦 Purchase Orders")
-
-    po_df = df[df["OrderFlag"] == True].copy()
-    po_df["Order Ref"] = po_df["PO_OrderRef"]
-
-    supplier_hidden = po_df[["Order Ref", "Supplier"]]
-
-    po_cols = [
-        "Order Ref", "Company", "Branch",
-        "Item Code", "Item Name",
-        "Item Qty", "Item Cost", "ETD"
-    ]
-
-    st.subheader("🧾 Purchase Order Lines")
-    po_edit = st.data_editor(po_df[po_cols], num_rows="dynamic")
-
-    final_po = po_edit.merge(supplier_hidden, on="Order Ref", how="left")
-
-    if st.button("📦 Push Purchase Orders", key="push_po"):
-        st.json(push_purchase_orders(final_po))
+   
