@@ -220,11 +220,10 @@ def build_sales_payload(ref, grp):
 
     return payload
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (Correct PO ref logic)
+# PURCHASE ORDER PAYLOAD (Uses PO Final Ref)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # ref is already something like: "PO-Q33581E.S10ALLE"
-    # Just use it exactly as-is
+    # ref is already the final PO reference "PO-QxxxxSUPP"
     po_ref = str(ref)
 
     supplier_name = grp["Supplier"].iloc[0]
@@ -271,6 +270,7 @@ def build_po_payload(ref, grp):
 
     return payload
 
+
 # ---------------------------------------------------------
 # PUSH SALES ORDERS
 # ---------------------------------------------------------
@@ -304,6 +304,7 @@ def push_sales_orders(df):
 
     return results
 
+
 # ---------------------------------------------------------
 # PUSH PURCHASE ORDERS
 # ---------------------------------------------------------
@@ -312,7 +313,8 @@ def push_purchase_orders(df):
     results = []
     heads = {"Content-Type": "application/json"}
 
-    for ref, grp in df.groupby("PO Order Ref"):
+    # Group PO rows by PO Final Ref
+    for ref, grp in df.groupby("PO Final Ref"):
         try:
             payload = build_po_payload(ref, grp)
 
@@ -362,6 +364,7 @@ if pm_files:
     for file in pm_files:
         fname = file.name
 
+        # Base order reference (Sales Order Ref)
         order_ref = re.sub(
             r"_ShipmentProductWithCostsAndPrice\.csv$",
             "",
@@ -411,13 +414,14 @@ if pm_files:
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
         # ---------------------------------------------------------
-        # BUILD BUFFER ROWS — FINAL PO REF WITH PREFIX
+        # BUILD BUFFER ROWS (PO Final Ref created here)
         # ---------------------------------------------------------
         for _, r in merged.iterrows():
             supplier = r["Supplier"]
             abbr = clean_supplier_name(supplier)[:4] if supplier else ""
 
-            final_po_ref = f"PO-{order_ref}{abbr}"
+            # FINAL PO REFERENCE 
+            po_final = f"PO-{order_ref}{abbr}"
 
             buffer.append({
                 "Branch": "Avondale",
@@ -429,9 +433,12 @@ if pm_files:
                 "Internal Comments": comment,
                 "ETD": etd.strftime("%Y-%m-%d"),
                 "Customer PO No": po_no,
+
+                # Sales Order uses this
                 "Order Ref": order_ref,
 
-                "PO Order Ref": final_po_ref,
+                # Purchase Order uses this
+                "PO Final Ref": po_final,
 
                 "Item Code": r["PartCode"],
                 "Product Name": r.get("Product Name", ""),
@@ -448,7 +455,7 @@ if pm_files:
     cols = [
         "Branch", "Sales Rep", "Project Name", "Company", "MemberId",
         "Supplier", "Internal Comments", "ETD",
-        "Customer PO No", "Order Ref", "PO Order Ref",
+        "Customer PO No", "Order Ref", "PO Final Ref",
         "Item Code", "Product Name", "Item Qty", "Item Price",
         "OrderFlag"
     ]
