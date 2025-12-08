@@ -98,18 +98,29 @@ def get_supplier_details(name):
 
     best_id = None
     best_score = 0
+    best_name = ""
 
     for _, row in suppliers_df.iterrows():
         cin7_clean = str(row["company_clean"])
         score = SequenceMatcher(None, cleaned, cin7_clean).ratio()
+
         if score > best_score:
             best_score = score
             best_id = row["id"]
+            best_name = row["company"]
 
-    if best_id and best_score >= 0.55:
-        return {"id": int(best_id), "abbr": cleaned[:4]}
+    # LOWER THRESHOLD TO 0.40 FOR LONG NAMES
+    if best_id and best_score >= 0.40:
+        return {
+            "id": int(best_id),
+            "abbr": cleaned[:4] or "SUPP"
+        }
 
-    return {"id": None, "abbr": ""}
+    # DEBUGGING HELP
+    raise Exception(
+        f"Fuzzy match failed for '{name}'. "
+        f"Closest match was '{best_name}' with score {best_score:.2f}"
+    )
 
 # ---------------------------------------------------------
 # BOM LOOKUP
