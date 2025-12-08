@@ -433,53 +433,112 @@ if pm_files:
 
     
     # ---------------------------------------------------------
-    # PURCHASE ORDERS TABLE (UNCUT SAMOAN EDITION)
+    # STOCK ON HAND LOOKUP
     # ---------------------------------------------------------
-    st.header("📦 Purchase Orders")
+    def get_stock_levels(code):
+        """Returns SOH for Avondale and Hamilton for a given product code."""
+        if not code:
+            return {"Avondale": 0, "Hamilton": 0}
 
-    # Build PO DF safely
+        res = cin7_get("v1/Products", params={
+            "where": f"code='{code}'",
+            "loadinventory": "true"
+        })
+
+        if not res:
+            return {"Avondale": 0, "Hamilton": 0}
+
+        inv_list = res[0].get("inventory", [])
+        out = {"Avondale": 0, "Hamilton": 0}
+
+        for loc in inv_list:
+            name = loc.get("locationName", "").upper()
+            qty = loc.get("stockOnHand", 0)
+
+            if "AVONDALE" in name:
+                out["Avondale"] = qty
+            elif "HAMILTON" in name:
+                out["Hamilton"] = qty
+
+        return out
+  
+
+    # ---------------------------------------------------------
+    # PURCHASE ORDERS TABLE (v51 UPGRADE)
+    # ---------------------------------------------------------
+    st.header("📦 Purchase Orders (v51 Upgrade)")
+
+    # Base DF for POs
     po_df = df[df["OrderFlag"] == True].copy()
     po_df["Order Ref"] = po_df["PO_OrderRef"]
 
-    # Fix missing values so Streamlit can't delete rows
+    # Force clean defaults so Streamlit doesn't delete rows
     po_df = po_df.fillna({
         "Supplier": "",
         "Item Name": "",
         "Item Code": "",
         "Item Qty": 0,
         "Item Cost": 0,
-        "ETD": datetime.now().strftime("%Y-%m-%d")
     })
 
-    # Display table safely
+    # ---------------------------------------------------------
+    # ADD STOCK LEVEL COLUMNS
+    # ---------------------------------------------------------
+    st.info("⏳ Checking stock levels... (Cin7 API)")
+
+    po_df["SOH_Avondale"] = po_df["Item Code"].apply(lambda x: get_stock_levels(x)["Avondale"])
+    po_df["SOH_Hamilton"] = po_df["Item Code"].apply(lambda x: get_stock_levels(x)["Hamilton"])
+
+    # ---------------------------------------------------------
+    # TICKBOX TO SELECT LINES TO ORDER
+    # ---------------------------------------------------------
+    # Default logic:
+    # If item exists in the OTHER branch with enough stock: do NOT order.
+    def auto_decide(row):
+        if row["Branch"] == "Avondale":
+            return not (row["SOH_Hamilton"] >= row["Item Qty"])
+        if row["Branch"] == "Hamilton":
+            return not (row["SOH_Avondale"] >= row["Item Qty"])
+        return True
+
+    po_df["Order?"] = po_df.apply(auto_decide, axis=1)
+
+    # ---------------------------------------------------------
+    # DISPLAY PO TABLE WITH STOCK AND ORDER SELECTION
+    # ---------------------------------------------------------
     po_display = po_df[[
-        "Order Ref", "Company", "Branch",
-        "Supplier",
-        "Item Code", "Item Name",
-        "Item Qty", "Item Cost", "ETD"
+        "Order Ref", "Company", "Branch", "Supplier",
+        "Item Code", "Item Name", "Item Qty", "Item Cost", "ETD",
+        "SOH_Avondale", "SOH_Hamilton", "Order?"
     ]]
 
-    st.subheader("🧾 Purchase Order Lines")
-
+    st.subheader("🧾 Purchase Order Lines (with SOH & Selection)")
     po_edit = st.data_editor(
         po_display,
-        num_rows="fixed",      # <-- NO MORE DELETES
+        num_rows="fixed",
         column_config={
             "Supplier": st.column_config.TextColumn(disabled=True),
             "Order Ref": st.column_config.TextColumn(disabled=True),
             "Company": st.column_config.TextColumn(disabled=True),
-            "Branch": st.column_config.TextColumn(disabled=True)
+            "Branch": st.column_config.TextColumn(disabled=True),
+            "SOH_Avondale": st.column_config.NumberColumn(disabled=True),
+            "SOH_Hamilton": st.column_config.NumberColumn(disabled=True),
+            "Order?": st.column_config.CheckboxColumn(),
         }
     )
 
-    final_po = po_edit.copy()
+    # Filter only selected items
+    final_po = po_edit[po_edit["Order?"] == True].copy()
 
-    # Debug to verify ALL rows are here
-    st.write("DEBUG FINAL PO ROW COUNT:", len(final_po))
+    # Debug preview
+    st.write("🧐 DEBUG — Final PO Rows:", len(final_po))
     st.dataframe(final_po)
 
-    # Push
+    # ---------------------------------------------------------
+    # PUSH PURCHASE ORDERS
+    # ---------------------------------------------------------
     if st.button("📦 Push Purchase Orders", key="push_po"):
         res = push_purchase_orders(final_po)
         st.write("RAW RESPONSE:", res)
         st.json(res)
+
