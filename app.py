@@ -464,15 +464,15 @@ if pm_files:
   
 
     # ---------------------------------------------------------
-    # PURCHASE ORDERS TABLE (v51 UPGRADE)
+    # PURCHASE ORDERS TABLE (NO SOH LOOKUP)
     # ---------------------------------------------------------
-    st.header("📦 Purchase Orders (v51 Upgrade)")
+    st.header("📦 Purchase Orders (SOH Removed)")
 
     # Base DF for POs
     po_df = df[df["OrderFlag"] == True].copy()
     po_df["Order Ref"] = po_df["PO_OrderRef"]
 
-    # Force clean defaults so Streamlit doesn't delete rows
+    # Clean defaults
     po_df = po_df.fillna({
         "Supplier": "",
         "Item Name": "",
@@ -481,32 +481,22 @@ if pm_files:
         "Item Cost": 0,
     })
 
-
+    # ---------------------------------------------------------
+    # REMOVE STOCK LOGIC — Order? defaults to True
+    # ---------------------------------------------------------
+    po_df["Order?"] = True
 
     # ---------------------------------------------------------
-    # TICKBOX TO SELECT LINES TO ORDER
-    # ---------------------------------------------------------
-    # Default logic:
-    # If item exists in the OTHER branch with enough stock: do NOT order.
-    def auto_decide(row):
-        if row["Branch"] == "Avondale":
-            return not (row["SOH_Hamilton"] >= row["Item Qty"])
-        if row["Branch"] == "Hamilton":
-            return not (row["SOH_Avondale"] >= row["Item Qty"])
-        return True
-
-    po_df["Order?"] = po_df.apply(auto_decide, axis=1)
-
-    # ---------------------------------------------------------
-    # DISPLAY PO TABLE WITH STOCK AND ORDER SELECTION
+    # DISPLAY PO TABLE (NO SOH COLUMNS)
     # ---------------------------------------------------------
     po_display = po_df[[
         "Order Ref", "Company", "Branch", "Supplier",
         "Item Code", "Item Name", "Item Qty", "Item Cost", "ETD",
-        "SOH_Avondale", "SOH_Hamilton", "Order?"
+        "Order?"
     ]]
 
-    st.subheader("🧾 Purchase Order Lines (with SOH & Selection)")
+    st.subheader("🧾 Purchase Order Lines (No SOH)")
+
     po_edit = st.data_editor(
         po_display,
         num_rows="fixed",
@@ -515,15 +505,16 @@ if pm_files:
             "Order Ref": st.column_config.TextColumn(disabled=True),
             "Company": st.column_config.TextColumn(disabled=True),
             "Branch": st.column_config.TextColumn(disabled=True),
-            "SOH_Avondale": st.column_config.NumberColumn(disabled=True),
-            "SOH_Hamilton": st.column_config.NumberColumn(disabled=True),
             "Order?": st.column_config.CheckboxColumn(),
         }
     )
 
-    # Filter only selected items
+    # Filter items selected for ordering
     final_po = po_edit[po_edit["Order?"] == True].copy()
 
+    # Debug
+    st.write("🧐 DEBUG — Final PO Count:", len(final_po))
+    st.dataframe(final_po)
 
     # ---------------------------------------------------------
     # PUSH PURCHASE ORDERS
@@ -532,4 +523,5 @@ if pm_files:
         res = push_purchase_orders(final_po)
         st.write("RAW RESPONSE:", res)
         st.json(res)
+
 
