@@ -517,11 +517,20 @@ if pm_files:
     st.dataframe(final_po)
 
     # ---------------------------------------------------------
-    # PUSH PURCHASE ORDERS
+    # PUSH PURCHASE ORDERS (CLEAN OUTPUT)
     # ---------------------------------------------------------
     if st.button("📦 Push Purchase Orders", key="push_po"):
         res = push_purchase_orders(final_po)
-        st.write("RAW RESPONSE:", res)
-        st.json(res)
 
+        # Show a clean summary only
+        st.subheader("Cin7 Purchase Order Results")
+
+        for r in res:
+            order_ref = r.get("Order Ref", "UNKNOWN")
+            success = r.get("Success", False)
+
+            if success:
+                st.success(f"{order_ref} — Successfully created in Cin7")
+            else:
+                st.error(f"{order_ref} — Failed: {r.get('Error') or r.get('Response')}")
 
