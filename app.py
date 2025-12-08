@@ -321,7 +321,7 @@ if pm_files:
     for file in pm_files:
         fname = file.name
 
-        order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice\\.csv$", "", fname, flags=re.I)
+        order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice\.csv$", "", fname, flags=re.I)
         po_no = order_ref_base.split(".")[0]
 
         st.subheader(f"📄 {fname}")
