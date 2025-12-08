@@ -264,6 +264,8 @@ def build_po_payload(ref, grp):
         "supplierId": sup["id"],
         "branchId": branch_id,
 
+        "memberId": added_by_id,
+
         # This is the actual PO creator
         "staffId": added_by_id,
 
