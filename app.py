@@ -61,9 +61,8 @@ def get_users_map():
 users_map = get_users_map()
 
 # ---------------------------------------------------------
-# SUPPLIER LOOKUP (clean + fuzzy, safe for old pandas)
+# SUPPLIER LOOKUP ENGINE (clean + fuzzy, safe for old pandas)
 # ---------------------------------------------------------
-import re
 
 @st.cache_data
 def load_all_suppliers():
@@ -77,8 +76,7 @@ def load_all_suppliers():
         if not x:
             return ""
         x = str(x).upper().strip()
-        x = x.replace("&", "AND")
-        x = x.replace("LIMITED", "LTD")
+        x = x.replace("&", "AND").replace("LIMITED", "LTD")
         x = re.sub(r"[^A-Z0-9]", "", x)
         return x
 
@@ -93,8 +91,7 @@ def clean_supplier_name(name: str):
     if not name:
         return ""
     x = str(name).upper().strip()
-    x = x.replace("&", "AND")
-    x = x.replace("LIMITED", "LTD")
+    x = x.replace("&", "AND").replace("LIMITED", "LTD")
     x = re.sub(r"[^A-Z0-9]", "", x)
     return x
 
@@ -111,9 +108,10 @@ def get_supplier_details(name):
         return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
 
     # Contains match
-    contains = suppliers_df[suppliers_df["company_clean"].str.contains(cleaned, na=False)]
+    contains = suppliers_df[suppliers_df["company_clean"]
+                            ].str.contains(cleaned, na=False)
     if len(contains) > 0:
-        return {"id": int(contains.iloc[0]["id"]), "abbr": name[:4].upper()}
+        return {"id": int(suppliers_df.iloc[contains.index[0]]["id"]), "abbr": name[:4].upper()}
 
     # Reverse contains
     contains_rev = suppliers_df[suppliers_df["company_clean"].apply(lambda x: cleaned in x)]
@@ -121,8 +119,6 @@ def get_supplier_details(name):
         return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
 
     return {"id": None, "abbr": ""}
-
-
 # ---------------------------------------------------------
 # BOM LOOKUP
 # ---------------------------------------------------------
@@ -138,11 +134,13 @@ def get_bom(code):
 def get_contact_data(company_name):
 
     def clean_text(s):
-        if not s: return ""
+        if not s: 
+            return ""
         return re.sub(r"\s+", " ", str(s).upper().strip())
 
     def extract_code(s):
-        if not s: return ""
+        if not s: 
+            return ""
         return str(s).split("-")[-1].strip().upper()
 
     if not company_name:
@@ -222,25 +220,17 @@ def build_sales_payload(ref, grp):
 
     return payload
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (BOM explode + fuzzy supplier match)
+# PURCHASE ORDER PAYLOAD (Correct PO ref logic)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # ref is the Supplier PO Group, e.g. "Q33581E.S10-Dormakaba New Zealand Ltd"
-    raw_ref = str(ref)
-    if "-" in raw_ref:
-        base_ref = raw_ref.split("-", 1)[0]  # "Q33581E.S10"
-    else:
-        base_ref = raw_ref
+    # ref is ALREADY the final PO reference: e.g. "Q33581E.S10ALLE"
+    po_ref = str(ref)
 
     supplier_name = grp["Supplier"].iloc[0]
     sup = get_supplier_details(supplier_name)
 
     if not sup["id"]:
         raise Exception(f"Supplier not found in Cin7: '{supplier_name}'")
-
-    # Use cleaned supplier name to avoid rubbish, then take first 4 chars
-    supplier_abbr = clean_supplier_name(supplier_name)[:4] if supplier_name else ""
-    po_ref = f"{base_ref}{supplier_abbr}"  # e.g. Q33581E.S10DORM
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
@@ -291,8 +281,12 @@ def push_sales_orders(df):
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_sales_payload(ref, grp)
-            r = requests.post(url, headers=heads, data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key))
+            r = requests.post(
+                url,
+                headers=heads,
+                data=json.dumps(payload),
+                auth=HTTPBasicAuth(api_username, api_key)
+            )
 
             results.append({
                 "SO Ref": ref,
@@ -320,6 +314,7 @@ def push_purchase_orders(df):
     for ref, grp in df.groupby("Supplier PO Group"):
         try:
             payload = build_po_payload(ref, grp)
+
             r = requests.post(
                 url,
                 headers=heads,
@@ -420,27 +415,30 @@ if pm_files:
         merged["MemberId"] = merged["AccountNumber"].map(mem_map)
         merged["Company"] = merged["AccountNumber"]
 
-        # Supplier comes from Products.csv
+        # Supplier from Products.csv
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
         # ---------------------------------------------------------
-        # BUILD BUFFER ROWS
+        # BUILD BUFFER ROWS — FIXED PO REFERENCE HERE
         # ---------------------------------------------------------
         for _, r in merged.iterrows():
+            supplier = r["Supplier"]
+            abbr = clean_supplier_name(supplier)[:4] if supplier else ""
+
             buffer.append({
                 "Branch": "Avondale",
                 "Sales Rep": r["Sales Rep"],
                 "Project Name": r["Project Name"],
                 "Company": r["Company"],
                 "MemberId": r["MemberId"],
-                "Supplier": r["Supplier"],
+                "Supplier": supplier,
                 "Internal Comments": comment,
                 "ETD": etd.strftime("%Y-%m-%d"),
                 "Customer PO No": po_no,
                 "Order Ref": order_ref,
 
-                # Group PO by order + supplier
-                "Supplier PO Group": f"{order_ref}-{r['Supplier']}",
+                # FINAL PO REF — used directly by build_po_payload()
+                "Supplier PO Group": f"{order_ref}{abbr}",
 
                 "Item Code": r["PartCode"],
                 "Product Name": r.get("Product Name", ""),
@@ -477,4 +475,6 @@ if pm_files:
 
     if st.button("📦 Push Purchase Orders (BOM Explode + Auto Supplier)"):
         st.json(push_purchase_orders(final_df))
+
+
 
