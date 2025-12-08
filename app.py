@@ -60,12 +60,43 @@ def get_users_map():
 
 users_map = get_users_map()
 
+# ---------------------------------------------------------
+# SUPPLIER LOOKUP (clean + fuzzy, safe for old pandas)
+# ---------------------------------------------------------
+import re
 
 @st.cache_data
+def load_all_suppliers():
+    suppliers = cin7_get("v1/Suppliers")
+    if not suppliers:
+        return pd.DataFrame(columns=["id", "company", "company_clean"])
 
-# ******* ADD THIS LINE — YOU FORGOT IT ********
+    df = pd.DataFrame(suppliers)
+
+    def clean_text(x):
+        if not x:
+            return ""
+        x = str(x).upper().strip()
+        x = x.replace("&", "AND")
+        x = x.replace("LIMITED", "LTD")
+        x = re.sub(r"[^A-Z0-9]", "", x)
+        return x
+
+    df["company_clean"] = df["company"].apply(clean_text)
+    return df[["id", "company", "company_clean"]]
+
+
 suppliers_df = load_all_suppliers()
-# ***********************************************
+
+
+def clean_supplier_name(name: str):
+    if not name:
+        return ""
+    x = str(name).upper().strip()
+    x = x.replace("&", "AND")
+    x = x.replace("LIMITED", "LTD")
+    x = re.sub(r"[^A-Z0-9]", "", x)
+    return x
 
 
 def get_supplier_details(name):
@@ -74,14 +105,17 @@ def get_supplier_details(name):
 
     cleaned = clean_supplier_name(name)
 
+    # Exact match
     exact = suppliers_df[suppliers_df["company_clean"] == cleaned]
     if len(exact) > 0:
         return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
 
+    # Contains match
     contains = suppliers_df[suppliers_df["company_clean"].str.contains(cleaned, na=False)]
     if len(contains) > 0:
         return {"id": int(contains.iloc[0]["id"]), "abbr": name[:4].upper()}
 
+    # Reverse contains
     contains_rev = suppliers_df[suppliers_df["company_clean"].apply(lambda x: cleaned in x)]
     if len(contains_rev) > 0:
         return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
