@@ -220,10 +220,44 @@ def build_sales_payload(ref, grp):
 
     return payload
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD
+# CORRECTED SUPPLIER DETAILS FUNCTION (VERY IMPORTANT)
+# ---------------------------------------------------------
+def get_supplier_details(name):
+    if not name:
+        return {"id": None, "abbr": ""}
+
+    cleaned = clean_supplier_name(name)
+
+    # Exact match
+    exact = suppliers_df[suppliers_df["company_clean"] == cleaned]
+    if len(exact) > 0:
+        return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
+
+    # Contains match (safe)
+    try:
+        contains = suppliers_df[
+            suppliers_df["company_clean"].astype(str).str.contains(str(cleaned))
+        ]
+        if len(contains) > 0:
+            return {"id": int(contains.iloc[0]["id"]), "abbr": name[:4].upper()}
+    except:
+        pass
+
+    # Reverse contains (safe)
+    contains_rev = suppliers_df[
+        suppliers_df["company_clean"].apply(lambda x: str(cleaned) in str(x))
+    ]
+    if len(contains_rev) > 0:
+        return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
+
+    return {"id": None, "abbr": ""}
+
+
+# ---------------------------------------------------------
+# PURCHASE ORDER PAYLOAD (uses PO_OrderRef)
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # ref is now the PO Order Ref: "PO-QxxxxSUPP"
+    # ref is already "PO-QxxxxSUPP"
     po_ref = str(ref)
 
     supplier_name = grp["Supplier"].iloc[0]
@@ -272,12 +306,12 @@ def build_po_payload(ref, grp):
 
 
 # ---------------------------------------------------------
-# PUSH SALES ORDERS
+# PUSH SALES ORDERS (uses SO_OrderRef internally)
 # ---------------------------------------------------------
 def push_sales_orders(df):
 
     df = df.copy()
-    df["Order Ref"] = df["SO_OrderRef"]   # <-- This is the SO format
+    df["Order Ref"] = df["SO_OrderRef"]   # <-- FINAL EXPORT SO VALUE
 
     url = f"{base_url}/v1/SalesOrders?loadboms=false"
     results = []
@@ -294,14 +328,14 @@ def push_sales_orders(df):
             )
 
             results.append({
-                "SO Ref": ref,
+                "Order Ref": ref,
                 "Success": r.status_code == 200,
                 "Response": r.text
             })
 
         except Exception as e:
             results.append({
-                "SO Ref": ref,
+                "Order Ref": ref,
                 "Success": False,
                 "Error": str(e)
             })
@@ -310,12 +344,12 @@ def push_sales_orders(df):
 
 
 # ---------------------------------------------------------
-# PUSH PURCHASE ORDERS
+# PUSH PURCHASE ORDERS (uses PO_OrderRef internally)
 # ---------------------------------------------------------
 def push_purchase_orders(df):
 
     df = df.copy()
-    df["Order Ref"] = df["PO_OrderRef"]   # <-- This is the PO format
+    df["Order Ref"] = df["PO_OrderRef"]   # <-- FINAL EXPORT PO VALUE
 
     url = f"{base_url}/v1/PurchaseOrders"
     results = []
@@ -333,14 +367,14 @@ def push_purchase_orders(df):
             )
 
             results.append({
-                "PO Ref": ref,
+                "Order Ref": ref,
                 "Success": r.status_code == 200,
                 "Response": r.text
             })
 
         except Exception as e:
             results.append({
-                "PO Ref": ref,
+                "Order Ref": ref,
                 "Success": False,
                 "Error": str(e)
             })
@@ -369,7 +403,7 @@ if pm_files:
     for file in pm_files:
         fname = file.name
 
-        # Sales Order base reference
+        # Base Sales Order reference
         order_ref = re.sub(
             r"_ShipmentProductWithCostsAndPrice\.csv$",
             "",
@@ -387,9 +421,7 @@ if pm_files:
         pm = pd.read_csv(file)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
-        # ---------------------------------------------------------
-        # SUBSTITUTIONS
-        # ---------------------------------------------------------
+        # Substitutions
         pm_sub = pm[pm["PartCode"].isin(subs["Code"].values)]
         if not pm_sub.empty:
             st.info("♻️ Substitutions Found:")
@@ -418,11 +450,14 @@ if pm_files:
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
         # ---------------------------------------------------------
-        # BUILD BUFFER ROWS — Dual Ref System
+        # DUAL REF SYSTEM
         # ---------------------------------------------------------
         for _, r in merged.iterrows():
             supplier = r["Supplier"]
             abbr = clean_supplier_name(supplier)[:4] if supplier else ""
+
+            SO_Ref = order_ref
+            PO_Ref = f"PO-{order_ref}{abbr}"
 
             buffer.append({
                 "Branch": "Avondale",
@@ -435,11 +470,8 @@ if pm_files:
                 "ETD": etd.strftime("%Y-%m-%d"),
                 "Customer PO No": po_no,
 
-                # Sales Order Ref (simple)
-                "SO_OrderRef": order_ref,
-
-                # Purchase Order Ref (formatted)
-                "PO_OrderRef": f"PO-{order_ref}{abbr}",
+                "SO_OrderRef": SO_Ref,
+                "PO_OrderRef": PO_Ref,
 
                 "Item Code": r["PartCode"],
                 "Product Name": r.get("Product Name", ""),
@@ -449,7 +481,7 @@ if pm_files:
             })
 
     # ---------------------------------------------------------
-    # BUILD DATAFRAME
+    # BUILD FINAL DATAFRAME
     # ---------------------------------------------------------
     df = pd.DataFrame(buffer)
 
@@ -457,8 +489,7 @@ if pm_files:
         "Branch", "Sales Rep", "Project Name", "Company", "MemberId",
         "Supplier", "Internal Comments", "ETD",
         "Customer PO No",
-        "SO_OrderRef",         # visible, editable
-        "PO_OrderRef",         # visible, editable
+        "SO_OrderRef", "PO_OrderRef",
         "Item Code", "Product Name", "Item Qty", "Item Price",
         "OrderFlag"
     ]
@@ -476,6 +507,6 @@ if pm_files:
     if st.button("🚀 Push Sales Orders"):
         st.json(push_sales_orders(final_df))
 
-    if st.button("📦 Push Purchase Orders (BOM Explode + Auto Supplier)"):
+    if st.button("📦 Push Purchase Orders"):
         st.json(push_purchase_orders(final_df))
 
