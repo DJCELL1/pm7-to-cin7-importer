@@ -27,13 +27,6 @@ branch_Avondale = cin7.get("branch_Avondale", 3)
 branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
-st.header("🔍 Cin7 Supplier Debug")
-
-st.write("Test 1 (All Contacts):", cin7_get("v1/Contacts"))
-st.write("Test 2 (contactType='Supplier'):", cin7_get("v1/Contacts", params={"where": "contactType='Supplier'"}))
-st.write("Test 3 (contactType='SUPPLIER'):", cin7_get("v1/Contacts", params={"where": "contactType='SUPPLIER'"}))
-st.write("Test 4 (type='Supplier'):", cin7_get("v1/Contacts", params={"where": "type='Supplier'"}))
-
 
 # ---------------------------------------------------------
 # HELPERS
@@ -59,6 +52,16 @@ def cin7_get(endpoint, params=None):
     if r.status_code == 200:
         return r.json()
     return None
+# ---------------------------------------------------------
+# DEBUG BLOCK — CHECK WHAT CIN7 RETURNS
+# ---------------------------------------------------------
+st.header("🔍 Cin7 Supplier Debug")
+
+st.write("Test 1 (All Contacts):", cin7_get("v1/Contacts"))
+st.write("Test 2 (contactType='Supplier'):", cin7_get("v1/Contacts", params={"where": "contactType='Supplier'"}))
+st.write("Test 3 (contactType='SUPPLIER'):", cin7_get("v1/Contacts", params={"where": "contactType='SUPPLIER'"}))
+st.write("Test 4 (type='Supplier'):", cin7_get("v1/Contacts", params={"where": "type='Supplier'"}))
+
 
 # ---------------------------------------------------------
 # USERS (For Created By dropdown)
