@@ -10,8 +10,8 @@ from difflib import SequenceMatcher
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v40", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v40 — SO + PO + Fuzzy Supplier Matching")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v41", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v41 — SO + PO + Correct Supplier Source")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -28,24 +28,23 @@ branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
 # ---------------------------------------------------------
-# CLEAN HELPERS
+# HELPERS
 # ---------------------------------------------------------
 def clean_code(x):
-    if pd.isna(x): return ""
+    if pd.isna(x):
+        return ""
     x = str(x).strip().upper()
     x = x.replace("–", "-").replace("—", "-")
     return re.sub(r"[^A-Z0-9/\\-]", "", x)
 
 def clean_supplier_name(name: str):
-    if not name: return ""
+    if not name:
+        return ""
     x = str(name).upper().strip()
     x = x.replace("&", "AND")
     x = x.replace("LIMITED", "LTD")
     return re.sub(r"[^A-Z0-9]", "", x)
 
-# ---------------------------------------------------------
-# CIN7 API
-# ---------------------------------------------------------
 def cin7_get(endpoint, params=None):
     url = f"{base_url}/{endpoint}"
     r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
@@ -54,7 +53,7 @@ def cin7_get(endpoint, params=None):
     return None
 
 # ---------------------------------------------------------
-# USERS (for Created By)
+# USERS (For Created By dropdown)
 # ---------------------------------------------------------
 def get_users_map():
     users = cin7_get("v1/Users")
@@ -69,17 +68,20 @@ users_map = get_users_map()
 user_options = {v: k for k, v in users_map.items()}
 
 # ---------------------------------------------------------
-# SUPPLIERS (FUZZY MATCH ENGINE)
+# SUPPLIER LIST — NOW FROM CONTACTS ENDPOINT
 # ---------------------------------------------------------
 @st.cache_data
 def load_all_suppliers():
-    suppliers = cin7_get("v1/Suppliers")
-    if not suppliers:
+    res = cin7_get("v1/Contacts", params={"where": "contactType='Supplier'"})
+    if not res:
+        st.error("❌ Cin7 returned NO suppliers. Check API permissions.")
         return pd.DataFrame(columns=["id", "company", "company_clean"])
-    df = pd.DataFrame(suppliers)
+
+    df = pd.DataFrame(res)
 
     def clean_text(x):
-        if not x: return ""
+        if not x:
+            return ""
         x = str(x).upper().strip()
         x = x.replace("&", "AND")
         x = x.replace("LIMITED", "LTD")
@@ -90,6 +92,9 @@ def load_all_suppliers():
 
 suppliers_df = load_all_suppliers()
 
+# ---------------------------------------------------------
+# FUZZY SUPPLIER MATCH
+# ---------------------------------------------------------
 def get_supplier_details(name):
     if not name or pd.isna(name):
         return {"id": None, "abbr": ""}
@@ -101,25 +106,23 @@ def get_supplier_details(name):
     best_name = ""
 
     for _, row in suppliers_df.iterrows():
-        cin7_clean = str(row["company_clean"])
-        score = SequenceMatcher(None, cleaned, cin7_clean).ratio()
+        comp = str(row["company_clean"])
+        score = SequenceMatcher(None, cleaned, comp).ratio()
 
         if score > best_score:
             best_score = score
             best_id = row["id"]
             best_name = row["company"]
 
-    # LOWER THRESHOLD TO 0.40 FOR LONG NAMES
     if best_id and best_score >= 0.40:
         return {
             "id": int(best_id),
             "abbr": cleaned[:4] or "SUPP"
         }
 
-    # DEBUGGING HELP
     raise Exception(
-        f"Fuzzy match failed for '{name}'. "
-        f"Closest match was '{best_name}' with score {best_score:.2f}"
+        f"Supplier match failed for '{name}'. "
+        f"Closest Cin7 supplier: '{best_name}' (score={best_score:.2f})"
     )
 
 # ---------------------------------------------------------
@@ -132,16 +135,13 @@ def get_bom(code):
     return []
 
 # ---------------------------------------------------------
-# CONTACT LOOKUP (Sales Orders)
+# CONTACT LOOKUP FOR SALES ORDERS
 # ---------------------------------------------------------
 def get_contact_data(company_name):
     def clean_text(s):
-        if not s: return ""
+        if not s:
+            return ""
         return re.sub(r"\s+", " ", str(s).upper().strip())
-
-    def extract_code(s):
-        if not s: return ""
-        return str(s).split("-")[-1].strip().upper()
 
     if not company_name:
         return {"projectName": "", "salesPersonId": None, "memberId": None}
@@ -149,20 +149,10 @@ def get_contact_data(company_name):
     cleaned = clean_text(company_name)
 
     r = cin7_get("v1/Contacts", params={"where": f"company='{cleaned}'"})
-    if r and isinstance(r, list) and len(r) > 0:
+    if r and len(r) > 0:
         c = r[0]
         return {
-            "projectName": c.get("firstName", ""),
-            "salesPersonId": c.get("salesPersonId"),
-            "memberId": c.get("id")
-        }
-
-    code = extract_code(company_name)
-    r = cin7_get("v1/Contacts", params={"where": f"accountNumber='{code}'"})
-    if r and isinstance(r, list) and len(r) > 0:
-        c = r[0]
-        return {
-            "projectName": c.get("firstName", ""),
+            "projectName": c.get("firstName",""),
             "salesPersonId": c.get("salesPersonId"),
             "memberId": c.get("id")
         }
@@ -170,12 +160,12 @@ def get_contact_data(company_name):
     return {"projectName": "", "salesPersonId": None, "memberId": None}
 
 # ---------------------------------------------------------
-# MEMBER ID FALLBACK
+# MEMBER RESOLUTION
 # ---------------------------------------------------------
-def resolve_member_id(member_id, branch_name):
+def resolve_member_id(member_id, branch):
     if member_id and int(member_id) != 0:
         return int(member_id)
-    return branch_Hamilton_default_member if branch_name == "Hamilton" else branch_Avondale_default_member
+    return branch_Hamilton_default_member if branch == "Hamilton" else branch_Avondale_default_member
 
 # ---------------------------------------------------------
 # SALES ORDER PAYLOAD
@@ -193,7 +183,7 @@ def build_sales_payload(ref, grp):
         "isApproved": True,
         "reference": ref,
         "branchId": branch_id,
-        "salesPersonId": int(sales_id) if sales_id else None,
+        "salesPersonId": sales_id,
         "memberId": resolve_member_id(mem, branch),
         "company": grp["Company"].iloc[0],
         "projectName": grp["Project Name"].iloc[0],
@@ -221,18 +211,13 @@ def build_sales_payload(ref, grp):
 # PURCHASE ORDER PAYLOAD
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    po_ref = ref
-
     supplier_name = grp["Supplier"].iloc[0]
     sup = get_supplier_details(supplier_name)
-
-    if not sup["id"]:
-        raise Exception(f"Supplier not found in Cin7: '{supplier_name}'")
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
-    created_by_user = grp["Created By"].iloc[0]
+    created_by = grp["Created By"].iloc[0]
 
     line_items = []
     for _, r in grp.iterrows():
@@ -256,10 +241,10 @@ def build_po_payload(ref, grp):
             })
 
     payload = [{
-        "reference": po_ref,
+        "reference": ref,
         "supplierId": sup["id"],
         "branchId": branch_id,
-        "staffId": created_by_user,
+        "staffId": created_by,
         "deliveryAddress": "Hardware Direct Warehouse",
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
         "isApproved": True,
@@ -302,16 +287,14 @@ def push_purchase_orders(df):
             payload = build_po_payload(ref, grp)
             r = requests.post(url, headers=heads, data=json.dumps(payload),
                               auth=HTTPBasicAuth(api_username, api_key))
-
             results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
-
         except Exception as e:
             results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
 
     return results
 
 # ---------------------------------------------------------
-# LOAD STATIC FILES
+# LOAD PRODUCT FILES
 # ---------------------------------------------------------
 products = pd.read_csv("Products.csv")
 subs = pd.read_excel("Substitutes.xlsx")
@@ -321,18 +304,20 @@ subs["Code"] = subs["Code"].apply(clean_code)
 subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
 # ---------------------------------------------------------
-# FILE UPLOAD
+# UI — FILE UPLOAD
 # ---------------------------------------------------------
 st.header("📤 Upload ProMaster CSV Files")
 pm_files = st.file_uploader("Upload CSV(s)", type=["csv"], accept_multiple_files=True)
 
 if pm_files:
-    raw_buffer = []
+    buffer = []
 
     for file in pm_files:
         fname = file.name
 
-        order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice\.csv$", "", fname, flags=re.I)
+        name_no_ext = re.sub(r"\.csv$", "", fname, flags=re.I)
+        order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice$", "", name_no_ext, flags=re.I)
+
         po_no = order_ref_base.split(".")[0]
 
         st.subheader(f"📄 {fname}")
@@ -343,23 +328,25 @@ if pm_files:
         pm = pd.read_csv(file)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
-        pm_sub = pm[pm["PartCode"].isin(subs["Code"].values)]
-        if not pm_sub.empty:
+        sub_hits = pm[pm["PartCode"].isin(subs["Code"].values)]
+        if not sub_hits.empty:
             st.info("♻️ Substitutions Found:")
-            for _, row in pm_sub.iterrows():
+            for _, row in sub_hits.iterrows():
                 orig = row["PartCode"]
                 sub = subs.loc[subs["Code"] == orig, "Substitute"].iloc[0]
-                swap = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"sub-{fname}-{orig}")
+                swap = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"{fname}-{orig}")
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
 
-        accs = merged["AccountNumber"].dropna().unique()
+        accounts = merged["AccountNumber"].dropna().unique()
 
-        proj_map, rep_map, mem_map = {}, {}, {}
+        proj_map = {}
+        rep_map = {}
+        mem_map = {}
 
-        for acc in accs:
+        for acc in accounts:
             d = get_contact_data(acc)
             proj_map[acc] = d["projectName"]
             rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
@@ -378,7 +365,7 @@ if pm_files:
             SO_Ref = order_ref_base
             PO_Ref = f"PO-{order_ref_base}{abbr}"
 
-            raw_buffer.append({
+            buffer.append({
                 "Branch": "Avondale",
                 "Company": r["Company"],
                 "Project Name": r["Project Name"],
@@ -386,7 +373,7 @@ if pm_files:
                 "MemberId": r["MemberId"],
                 "Internal Comments": comment,
                 "Customer PO No": po_no,
-                "Supplier": r["Supplier"],
+                "Supplier": supplier,
                 "ETD": etd.strftime("%Y-%m-%d"),
 
                 "SO_OrderRef": SO_Ref,
@@ -400,19 +387,20 @@ if pm_files:
                 "OrderFlag": True
             })
 
-    df = pd.DataFrame(raw_buffer)
+    df = pd.DataFrame(buffer)
 
     # ---------------------------------------------------------
     # SALES ORDER EDITOR
     # ---------------------------------------------------------
     st.header("📄 Sales Orders")
+
     so_df = df[df["OrderFlag"] == True].copy()
     so_df["Order Ref"] = so_df["SO_OrderRef"]
 
     so_cols = [
         "Order Ref", "Company", "Branch", "Sales Rep", "Project Name",
-        "MemberId", "Item Code", "Item Name", "Item Qty", "Item Cost",
-        "Internal Comments", "Customer PO No", "ETD"
+        "MemberId", "Item Code", "Item Name", "Item Qty",
+        "Item Cost", "Internal Comments", "Customer PO No", "ETD"
     ]
 
     st.subheader("📝 Sales Order Lines")
@@ -425,12 +413,12 @@ if pm_files:
     # PURCHASE ORDER EDITOR
     # ---------------------------------------------------------
     st.header("📦 Purchase Orders")
+
     po_df = df[df["OrderFlag"] == True].copy()
     po_df["Order Ref"] = po_df["PO_OrderRef"]
 
     po_df["Created By"] = ""
-    # Supplier stays hidden but required internally
-    # NO editing, NO display
+
     hidden_supplier = po_df[["Order Ref", "Supplier"]].copy()
 
     po_cols = [
