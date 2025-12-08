@@ -139,35 +139,11 @@ def get_supplier_details(name):
 # ---------------------------------------------------------
 # BOM LOOKUP
 # ---------------------------------------------------------
-
 def get_bom(code):
-    # First: find BOM master ID
-    search = cin7_get("v1/BomMasters", params={"where": f"code='{code}'"})
-    if not search or len(search) == 0:
-        return []   # no BOM found
-    
-    bom_id = search[0].get("id")
-    if not bom_id:
-        return []
-
-    # Second: fetch the full BOM definition
-    bom_data = cin7_get(f"v1/BomMasters/{bom_id}")
-    if not bom_data:
-        return []
-
-    product = bom_data.get("product", {})
-    components = product.get("components", [])
-
-    # Normalise to your PO system's component format
-    out = []
-    for c in components:
-        out.append({
-            "code": c.get("code"),
-            "quantity": c.get("qty", 1),
-            "unitPrice": c.get("unitCost", 0)
-        })
-
-    return out
+    res = cin7_get("v1/BillsOfMaterials", params={"where": f"code='{code}'"})
+    if res and len(res) > 0:
+        return res[0].get("components", [])
+    return []
 
 # ---------------------------------------------------------
 # CONTACT LOOKUP FOR SALES ORDERS
@@ -255,75 +231,54 @@ def build_sales_payload(ref, grp):
 # PO PAYLOAD
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # Get supplier details via fuzzy match
     supplier = grp["Supplier"].iloc[0]
     sup = get_supplier_details(supplier)
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
-    # =====================================
-    # LINE ITEMS (with BOM v2 support)
-    # =====================================
+    # Build line items with BOM support
     line_items = []
-
     for _, r in grp.iterrows():
-        parent_code = r["Item Code"]
-        qty_ordered = float(r["Item Qty"])
-        price_parent = float(r["Item Cost"])
+        code = r["Item Code"]
+        qty = float(r["Item Qty"])
+        price = float(r["Item Cost"])
 
-        # -------------------------------------
-        # Pull BOM from v2/BomMasters
-        # -------------------------------------
-        bom_components = get_bom(parent_code)   # uses your NEW v2 version
-
-        if bom_components:
-            # Parent has BOM – explode components
-            for comp in bom_components:
-                comp_code = comp.get("code")
-                comp_qty = comp.get("quantity", 1)
-                comp_price = comp.get("unitPrice", 0)
-
-                # Multiply component qty by parent qty
-                exploded_qty = comp_qty * qty_ordered
-
+        bom = get_bom(code)
+        if bom:
+            for comp in bom:
                 line_items.append({
-                    "code": comp_code,
-                    "qty": exploded_qty,
-                    "unitPrice": comp_price
+                    "code": comp["code"],
+                    "qty": comp["quantity"] * qty,
+                    "unitPrice": comp.get("unitPrice", 0)
                 })
-
         else:
-            # No BOM → normal product, add directly
             line_items.append({
-                "code": parent_code,
-                "qty": qty_ordered,
-                "unitPrice": price_parent
+                "code": code,
+                "qty": qty,
+                "unitPrice": price
             })
 
-    # =====================================
-    # FINAL PAYLOAD
-    # =====================================
     return [{
         "reference": ref,
         "supplierId": sup["id"],
         "branchId": branch_id,
 
-        # Cin7 requires a memberId for PO – use supplier ID
         "memberId": sup["id"],
 
-        # Who created it
+        # This is the actual PO creator
         "staffId": added_by_id,
+
+        # Added for consistency with SOs
         "enteredById": added_by_id,
 
-        # Delivery info
         "deliveryAddress": "Hardware Direct Warehouse",
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
-
         "isApproved": True,
 
         "lineItems": line_items
     }]
+
 # ---------------------------------------------------------
 # PUSH SO
 # ---------------------------------------------------------
@@ -509,15 +464,15 @@ if pm_files:
   
 
     # ---------------------------------------------------------
-    # PURCHASE ORDERS TABLE (NO SOH LOOKUP)
+    # PURCHASE ORDERS TABLE (v51 UPGRADE)
     # ---------------------------------------------------------
-    st.header("📦 Purchase Orders (SOH Removed)")
+    st.header("📦 Purchase Orders (v51 Upgrade)")
 
     # Base DF for POs
     po_df = df[df["OrderFlag"] == True].copy()
     po_df["Order Ref"] = po_df["PO_OrderRef"]
 
-    # Clean defaults
+    # Force clean defaults so Streamlit doesn't delete rows
     po_df = po_df.fillna({
         "Supplier": "",
         "Item Name": "",
@@ -527,21 +482,37 @@ if pm_files:
     })
 
     # ---------------------------------------------------------
-    # REMOVE STOCK LOGIC — Order? defaults to True
+    # ADD STOCK LEVEL COLUMNS
     # ---------------------------------------------------------
-    po_df["Order?"] = True
+    st.info("⏳ Checking stock levels... (Cin7 API)")
+
+    po_df["SOH_Avondale"] = po_df["Item Code"].apply(lambda x: get_stock_levels(x)["Avondale"])
+    po_df["SOH_Hamilton"] = po_df["Item Code"].apply(lambda x: get_stock_levels(x)["Hamilton"])
 
     # ---------------------------------------------------------
-    # DISPLAY PO TABLE (NO SOH COLUMNS)
+    # TICKBOX TO SELECT LINES TO ORDER
+    # ---------------------------------------------------------
+    # Default logic:
+    # If item exists in the OTHER branch with enough stock: do NOT order.
+    def auto_decide(row):
+        if row["Branch"] == "Avondale":
+            return not (row["SOH_Hamilton"] >= row["Item Qty"])
+        if row["Branch"] == "Hamilton":
+            return not (row["SOH_Avondale"] >= row["Item Qty"])
+        return True
+
+    po_df["Order?"] = po_df.apply(auto_decide, axis=1)
+
+    # ---------------------------------------------------------
+    # DISPLAY PO TABLE WITH STOCK AND ORDER SELECTION
     # ---------------------------------------------------------
     po_display = po_df[[
         "Order Ref", "Company", "Branch", "Supplier",
         "Item Code", "Item Name", "Item Qty", "Item Cost", "ETD",
-        "Order?"
+        "SOH_Avondale", "SOH_Hamilton", "Order?"
     ]]
 
-    st.subheader("🧾 Purchase Order Lines (No SOH)")
-
+    st.subheader("🧾 Purchase Order Lines (with SOH & Selection)")
     po_edit = st.data_editor(
         po_display,
         num_rows="fixed",
@@ -550,32 +521,24 @@ if pm_files:
             "Order Ref": st.column_config.TextColumn(disabled=True),
             "Company": st.column_config.TextColumn(disabled=True),
             "Branch": st.column_config.TextColumn(disabled=True),
+            "SOH_Avondale": st.column_config.NumberColumn(disabled=True),
+            "SOH_Hamilton": st.column_config.NumberColumn(disabled=True),
             "Order?": st.column_config.CheckboxColumn(),
         }
     )
 
-    # Filter items selected for ordering
+    # Filter only selected items
     final_po = po_edit[po_edit["Order?"] == True].copy()
 
-    # Debug
-    st.write("🧐 DEBUG — Final PO Count:", len(final_po))
+    # Debug preview
+    st.write("🧐 DEBUG — Final PO Rows:", len(final_po))
     st.dataframe(final_po)
 
     # ---------------------------------------------------------
-    # PUSH PURCHASE ORDERS (CLEAN OUTPUT)
+    # PUSH PURCHASE ORDERS
     # ---------------------------------------------------------
     if st.button("📦 Push Purchase Orders", key="push_po"):
         res = push_purchase_orders(final_po)
-
-        # Show a clean summary only
-        st.subheader("Cin7 Purchase Order Results")
-
-        for r in res:
-            order_ref = r.get("Order Ref", "UNKNOWN")
-            success = r.get("Success", False)
-
-            if success:
-                st.success(f"{order_ref} — Successfully created in Cin7")
-            else:
-                st.error(f"{order_ref} — Failed: {r.get('Error') or r.get('Response')}")
+        st.write("RAW RESPONSE:", res)
+        st.json(res)
 
