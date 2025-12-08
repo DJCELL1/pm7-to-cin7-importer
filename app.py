@@ -10,8 +10,8 @@ from difflib import SequenceMatcher
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v42", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v42 — SO + PO + Supplier Fix (type='Supplier')")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v50", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v50 — Global Added By + SO/PO Auto Staff")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -53,7 +53,7 @@ def cin7_get(endpoint, params=None):
     return None
 
 # ---------------------------------------------------------
-# USERS
+# USERS (For Added By selector)
 # ---------------------------------------------------------
 def get_users_map():
     users = cin7_get("v1/Users")
@@ -68,7 +68,18 @@ users_map = get_users_map()
 user_options = {v: k for k, v in users_map.items()}
 
 # ---------------------------------------------------------
-# SUPPLIERS VIA type='Supplier'
+# GLOBAL "ADDED BY" DROPDOWN
+# ---------------------------------------------------------
+st.sidebar.header("👤 Added By (Cin7 Staff)")
+added_by_name = st.sidebar.selectbox(
+    "Select user:",
+    list(user_options.keys()) if user_options else ["No users found"]
+)
+added_by_id = user_options.get(added_by_name, None)
+st.sidebar.success(f"Using Staff ID: {added_by_id}")
+
+# ---------------------------------------------------------
+# SUPPLIERS (Contacts where type='Supplier')
 # ---------------------------------------------------------
 @st.cache_data
 def load_all_suppliers():
@@ -93,7 +104,7 @@ def load_all_suppliers():
 suppliers_df = load_all_suppliers()
 
 # ---------------------------------------------------------
-# FUZZY MATCH SUPPLIER
+# FUZZY SUPPLIER MATCH
 # ---------------------------------------------------------
 def get_supplier_details(name):
     if not name or pd.isna(name):
@@ -135,7 +146,7 @@ def get_bom(code):
     return []
 
 # ---------------------------------------------------------
-# CONTACT LOOKUP (Sales Orders)
+# CONTACT LOOKUP FOR SALES ORDERS
 # ---------------------------------------------------------
 def get_contact_data(company_name):
     def clean_text(s):
@@ -174,16 +185,13 @@ def build_sales_payload(ref, grp):
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
-    rep = grp["Sales Rep"].iloc[0]
-    sales_id = next((i for i, n in users_map.items() if n == rep), None)
-
     mem = grp["MemberId"].iloc[0]
 
     return [{
         "isApproved": True,
         "reference": ref,
         "branchId": branch_id,
-        "salesPersonId": sales_id,
+        "salesPersonId": added_by_id,
         "memberId": resolve_member_id(mem, branch),
         "company": grp["Company"].iloc[0],
         "projectName": grp["Project Name"].iloc[0],
@@ -214,7 +222,6 @@ def build_po_payload(ref, grp):
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
-    created_by = grp["Created By"].iloc[0]
 
     line_items = []
     for _, r in grp.iterrows():
@@ -241,7 +248,7 @@ def build_po_payload(ref, grp):
         "reference": ref,
         "supplierId": sup["id"],
         "branchId": branch_id,
-        "staffId": created_by,
+        "staffId": added_by_id,  # ← GLOBAL ADDED BY
         "deliveryAddress": "Hardware Direct Warehouse",
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
         "isApproved": True,
@@ -264,7 +271,6 @@ def push_sales_orders(df):
             results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
         except Exception as e:
             results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
-
     return results
 
 # ---------------------------------------------------------
@@ -283,7 +289,6 @@ def push_purchase_orders(df):
             results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
         except Exception as e:
             results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
-
     return results
 
 # ---------------------------------------------------------
@@ -322,10 +327,10 @@ if pm_files:
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
         # substitutions
-        hit = pm[pm["PartCode"].isin(subs["Code"].values)]
-        if not hit.empty:
+        hits = pm[pm["PartCode"].isin(subs["Code"].values)]
+        if not hits.empty:
             st.info("♻️ Substitutions Found:")
-            for _, row in hit.iterrows():
+            for _, row in hits.iterrows():
                 orig = row["PartCode"]
                 sub = subs.loc[subs["Code"] == orig, "Substitute"].iloc[0]
                 choice = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"{fname}-{orig}")
@@ -382,7 +387,7 @@ if pm_files:
     df = pd.DataFrame(buffer)
 
     # ---------------------------------------------------------
-    # SALES ORDER EDITOR
+    # SALES ORDERS TABLE
     # ---------------------------------------------------------
     st.header("📄 Sales Orders")
 
@@ -390,46 +395,38 @@ if pm_files:
     so_df["Order Ref"] = so_df["SO_OrderRef"]
 
     so_cols = [
-        "Order Ref", "Company", "Branch", "Sales Rep", "Project Name",
-        "MemberId", "Item Code", "Item Name", "Item Qty",
-        "Item Cost", "Internal Comments", "Customer PO No", "ETD"
+        "Order Ref", "Company", "Branch", "Sales Rep",
+        "Project Name", "MemberId",
+        "Item Code", "Item Name", "Item Qty", "Item Cost",
+        "Internal Comments", "Customer PO No", "ETD"
     ]
 
     st.subheader("📝 Sales Order Lines")
     so_edit = st.data_editor(so_df[so_cols], num_rows="dynamic")
 
-    if st.button("🚀 Push Sales Orders"):
+    if st.button("🚀 Push Sales Orders", key="push_so"):
         st.json(push_sales_orders(so_edit))
 
     # ---------------------------------------------------------
-    # PURCHASE ORDER EDITOR
+    # PURCHASE ORDERS TABLE
     # ---------------------------------------------------------
     st.header("📦 Purchase Orders")
 
     po_df = df[df["OrderFlag"] == True].copy()
     po_df["Order Ref"] = po_df["PO_OrderRef"]
-    po_df["Created By"] = ""
 
     supplier_hidden = po_df[["Order Ref", "Supplier"]]
 
     po_cols = [
-        "Order Ref", "Company", "Created By",
-        "Branch", "Item Code", "Item Name",
+        "Order Ref", "Company", "Branch",
+        "Item Code", "Item Name",
         "Item Qty", "Item Cost", "ETD"
     ]
 
     st.subheader("🧾 Purchase Order Lines")
     po_edit = st.data_editor(po_df[po_cols], num_rows="dynamic")
 
-    po_edit["Created By"] = po_edit["Created By"].apply(lambda x: user_options.get(x, None))
-
     final_po = po_edit.merge(supplier_hidden, on="Order Ref", how="left")
 
-    
-    if st.button("📦 Push Purchase Orders"):
-       try:
-           st.write("DEBUG FINAL DF:", final_po)
-           result = push_purchase_orders(final_po)
-           st.json(result)
-       except Exception as e:
-           st.error(f"PO ERROR → {e}")
+    if st.button("📦 Push Purchase Orders", key="push_po"):
+        st.json(push_purchase_orders(final_po))
