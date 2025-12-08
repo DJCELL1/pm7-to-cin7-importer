@@ -425,9 +425,8 @@ if pm_files:
 
     final_po = po_edit.merge(supplier_hidden, on="Order Ref", how="left")
 
+    
     if st.button("📦 Push Purchase Orders"):
-        st.json(push_purchase_orders(final_po))
-if st.button("📦 Push Purchase Orders"):
     try:
         st.write("DEBUG FINAL DF:", final_po)
         result = push_purchase_orders(final_po)
