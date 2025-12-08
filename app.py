@@ -431,18 +431,28 @@ if pm_files:
 
     
     # ---------------------------------------------------------
-    # PURCHASE ORDERS TABLE (FIXED + BULLETPROOF)
+    # PURCHASE ORDERS TABLE (UNCUT SAMOAN EDITION)
     # ---------------------------------------------------------
     st.header("📦 Purchase Orders")
 
-    # Build PO DF
+    # Build PO DF safely
     po_df = df[df["OrderFlag"] == True].copy()
     po_df["Order Ref"] = po_df["PO_OrderRef"]
 
-    # Include supplier in the editor (read-only)
+    # Fix missing values so Streamlit can't delete rows
+    po_df = po_df.fillna({
+        "Supplier": "",
+        "Item Name": "",
+        "Item Code": "",
+        "Item Qty": 0,
+        "Item Cost": 0,
+        "ETD": datetime.now().strftime("%Y-%m-%d")
+    })
+
+    # Display table safely
     po_display = po_df[[
         "Order Ref", "Company", "Branch",
-        "Supplier",    # <-- IMPORTANT
+        "Supplier",
         "Item Code", "Item Name",
         "Item Qty", "Item Cost", "ETD"
     ]]
@@ -451,25 +461,23 @@ if pm_files:
 
     po_edit = st.data_editor(
         po_display,
-        num_rows="dynamic",
+        num_rows="fixed",      # <-- NO MORE DELETES
         column_config={
-            "Supplier": st.column_config.TextColumn(disabled=True),  # lock supplier
-            "Order Ref": st.column_config.TextColumn(disabled=True), # lock order ref
+            "Supplier": st.column_config.TextColumn(disabled=True),
+            "Order Ref": st.column_config.TextColumn(disabled=True),
             "Company": st.column_config.TextColumn(disabled=True),
-            "Branch": st.column_config.TextColumn(disabled=True),
+            "Branch": st.column_config.TextColumn(disabled=True)
         }
     )
 
-    # Final PO data is directly from edited table
     final_po = po_edit.copy()
 
-    # Debug
-    st.write("DEBUG FINAL PO:", final_po.head())
+    # Debug to verify ALL rows are here
+    st.write("DEBUG FINAL PO ROW COUNT:", len(final_po))
+    st.dataframe(final_po)
 
-    # Push button
+    # Push
     if st.button("📦 Push Purchase Orders", key="push_po"):
         res = push_purchase_orders(final_po)
         st.write("RAW RESPONSE:", res)
         st.json(res)
-
-   
