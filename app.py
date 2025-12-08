@@ -429,6 +429,49 @@ if pm_files:
     if st.button("🚀 Push Sales Orders", key="push_so"):
         st.json(push_sales_orders(so_edit))
 
+    
+    # ---------------------------------------------------------
+    # PURCHASE ORDERS TABLE (FIXED + BULLETPROOF)
+    # ---------------------------------------------------------
+    st.header("📦 Purchase Orders")
+
+    # Build PO DF
+    po_df = df[df["OrderFlag"] == True].copy()
+    po_df["Order Ref"] = po_df["PO_OrderRef"]
+
+    # Include supplier in the editor (read-only)
+    po_display = po_df[[
+        "Order Ref", "Company", "Branch",
+        "Supplier",    # <-- IMPORTANT
+        "Item Code", "Item Name",
+        "Item Qty", "Item Cost", "ETD"
+    ]]
+
+    st.subheader("🧾 Purchase Order Lines")
+
+    po_edit = st.data_editor(
+        po_display,
+        num_rows="dynamic",
+        column_config={
+            "Supplier": st.column_config.TextColumn(disabled=True),  # lock supplier
+            "Order Ref": st.column_config.TextColumn(disabled=True), # lock order ref
+            "Company": st.column_config.TextColumn(disabled=True),
+            "Branch": st.column_config.TextColumn(disabled=True),
+        }
+    )
+
+    # Final PO data is directly from edited table
+    final_po = po_edit.copy()
+
+    # Debug
+    st.write("DEBUG FINAL PO:", final_po.head())
+
+    # Push button
+    if st.button("📦 Push Purchase Orders", key="push_po"):
+        res = push_purchase_orders(final_po)
+        st.write("RAW RESPONSE:", res)
+        st.json(res)
+
     # ---------------------------------------------------------
     # PURCHASE ORDERS TABLE
     # ---------------------------------------------------------
