@@ -427,9 +427,9 @@ if pm_files:
 
     
     if st.button("📦 Push Purchase Orders"):
-    try:
-        st.write("DEBUG FINAL DF:", final_po)
-        result = push_purchase_orders(final_po)
-        st.json(result)
-    except Exception as e:
-        st.error(f"PO ERROR → {e}")
+       try:
+           st.write("DEBUG FINAL DF:", final_po)
+           result = push_purchase_orders(final_po)
+           st.json(result)
+       except Exception as e:
+           st.error(f"PO ERROR → {e}")
