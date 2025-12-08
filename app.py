@@ -5,13 +5,13 @@ from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
 import json
 import re
-import os
+from difflib import SequenceMatcher
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v35.2", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v35.2 — SO + PO + BOM + Auto-Supplier")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v40", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v40 — SO + PO + Fuzzy Supplier Matching")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -28,13 +28,22 @@ branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
 # ---------------------------------------------------------
-# CLEAN CODE
+# CLEAN CODE / NAME HELPERS
 # ---------------------------------------------------------
 def clean_code(x):
-    if pd.isna(x): return ""
+    if pd.isna(x): 
+        return ""
     x = str(x).strip().upper()
     x = x.replace("–", "-").replace("—", "-")
-    return re.sub(r"[^A-Z0-9/\-]", "", x)
+    return re.sub(r"[^A-Z0-9/\\-]", "", x)
+
+def clean_supplier_name(name: str):
+    if not name:
+        return ""
+    x = str(name).upper().strip()
+    x = x.replace("&", "AND")
+    x = x.replace("LIMITED", "LTD")
+    return re.sub(r"[^A-Z0-9]", "", x)
 
 # ---------------------------------------------------------
 # CIN7 API WRAPPER
@@ -47,7 +56,7 @@ def cin7_get(endpoint, params=None):
     return None
 
 # ---------------------------------------------------------
-# USERS
+# USERS (for Created By dropdown)
 # ---------------------------------------------------------
 def get_users_map():
     users = cin7_get("v1/Users")
@@ -59,11 +68,11 @@ def get_users_map():
     }
 
 users_map = get_users_map()
+user_options = {v: k for k, v in users_map.items()}
 
 # ---------------------------------------------------------
-# SUPPLIER LOOKUP ENGINE (clean + fuzzy, safe for old pandas)
+# LOAD SUPPLIERS (FUZZY MATCH ENGINE)
 # ---------------------------------------------------------
-
 @st.cache_data
 def load_all_suppliers():
     suppliers = cin7_get("v1/Suppliers")
@@ -76,49 +85,39 @@ def load_all_suppliers():
         if not x:
             return ""
         x = str(x).upper().strip()
-        x = x.replace("&", "AND").replace("LIMITED", "LTD")
-        x = re.sub(r"[^A-Z0-9]", "", x)
-        return x
+        x = x.replace("&", "AND")
+        x = x.replace("LIMITED", "LTD")
+        return re.sub(r"[^A-Z0-9]", "", x)
 
     df["company_clean"] = df["company"].apply(clean_text)
     return df[["id", "company", "company_clean"]]
 
-
 suppliers_df = load_all_suppliers()
 
-
-def clean_supplier_name(name: str):
-    if not name:
-        return ""
-    x = str(name).upper().strip()
-    x = x.replace("&", "AND").replace("LIMITED", "LTD")
-    x = re.sub(r"[^A-Z0-9]", "", x)
-    return x
-
-
 def get_supplier_details(name):
-    if not name:
+    if not name or pd.isna(name):
         return {"id": None, "abbr": ""}
 
     cleaned = clean_supplier_name(name)
 
-    # Exact match
-    exact = suppliers_df[suppliers_df["company_clean"] == cleaned]
-    if len(exact) > 0:
-        return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
+    best_id = None
+    best_score = 0
 
-    # Contains match
-    contains = suppliers_df[suppliers_df["company_clean"]
-                            ].str.contains(cleaned, na=False)
-    if len(contains) > 0:
-        return {"id": int(suppliers_df.iloc[contains.index[0]]["id"]), "abbr": name[:4].upper()}
+    for _, row in suppliers_df.iterrows():
+        cin7_clean = str(row["company_clean"])
+        score = SequenceMatcher(None, cleaned, cin7_clean).ratio()
+        if score > best_score:
+            best_score = score
+            best_id = row["id"]
 
-    # Reverse contains
-    contains_rev = suppliers_df[suppliers_df["company_clean"].apply(lambda x: cleaned in x)]
-    if len(contains_rev) > 0:
-        return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
+    if best_id and best_score >= 0.55:
+        return {
+            "id": int(best_id),
+            "abbr": cleaned[:4]
+        }
 
     return {"id": None, "abbr": ""}
+
 # ---------------------------------------------------------
 # BOM LOOKUP
 # ---------------------------------------------------------
@@ -129,18 +128,15 @@ def get_bom(code):
     return []
 
 # ---------------------------------------------------------
-# CONTACT LOOKUP (for SO fields)
+# CONTACT LOOKUP (Sales Orders)
 # ---------------------------------------------------------
 def get_contact_data(company_name):
-
     def clean_text(s):
-        if not s: 
-            return ""
+        if not s: return ""
         return re.sub(r"\s+", " ", str(s).upper().strip())
 
     def extract_code(s):
-        if not s: 
-            return ""
+        if not s: return ""
         return str(s).split("-")[-1].strip().upper()
 
     if not company_name:
@@ -148,7 +144,6 @@ def get_contact_data(company_name):
 
     cleaned = clean_text(company_name)
 
-    # Search by company (exact)
     r = cin7_get("v1/Contacts", params={"where": f"company='{cleaned}'"})
     if r and isinstance(r, list) and len(r) > 0:
         c = r[0]
@@ -158,7 +153,6 @@ def get_contact_data(company_name):
             "memberId": c.get("id")
         }
 
-    # Fallback search: account number
     code = extract_code(company_name)
     r = cin7_get("v1/Contacts", params={"where": f"accountNumber='{code}'"})
     if r and isinstance(r, list) and len(r) > 0:
@@ -172,7 +166,7 @@ def get_contact_data(company_name):
     return {"projectName": "", "salesPersonId": None, "memberId": None}
 
 # ---------------------------------------------------------
-# SAFE MEMBERID
+# MEMBER SAFE
 # ---------------------------------------------------------
 def resolve_member_id(member_id, branch_name):
     if member_id and int(member_id) != 0:
@@ -194,14 +188,14 @@ def build_sales_payload(ref, grp):
 
     payload = [{
         "isApproved": True,
-        "reference": str(ref),
+        "reference": ref,
         "branchId": branch_id,
         "salesPersonId": int(sales_id) if sales_id else None,
         "memberId": resolve_member_id(mem, branch),
-        "company": str(grp["Company"].iloc[0]),
-        "projectName": str(grp["Project Name"].iloc[0]),
-        "internalComments": str(grp["Internal Comments"].iloc[0]),
-        "customerOrderNo": str(grp["Customer PO No"].iloc[0]),
+        "company": grp["Company"].iloc[0],
+        "projectName": grp["Project Name"].iloc[0],
+        "internalComments": grp["Internal Comments"].iloc[0],
+        "customerOrderNo": grp["Customer PO No"].iloc[0],
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
         "currencyCode": "NZD",
         "taxStatus": "Excl",
@@ -210,74 +204,39 @@ def build_sales_payload(ref, grp):
         "priceTier": "Trade (NZD - Excl)",
         "lineItems": [
             {
-                "code": str(r["Item Code"]),
-                "qty": float(r["Item Qty"] or 0),
-                "unitPrice": float(r["Item Price"] or 0)
+                "code": r["Item Code"],
+                "qty": float(r["Item Qty"]),
+                "unitPrice": float(r["Item Price"])
             }
             for _, r in grp.iterrows()
         ]
     }]
 
     return payload
-# ---------------------------------------------------------
-# CORRECTED SUPPLIER DETAILS FUNCTION (VERY IMPORTANT)
-# ---------------------------------------------------------
-def get_supplier_details(name):
-    if not name:
-        return {"id": None, "abbr": ""}
-
-    cleaned = clean_supplier_name(name)
-
-    # Exact match
-    exact = suppliers_df[suppliers_df["company_clean"] == cleaned]
-    if len(exact) > 0:
-        return {"id": int(exact.iloc[0]["id"]), "abbr": name[:4].upper()}
-
-    # Contains match (safe)
-    try:
-        contains = suppliers_df[
-            suppliers_df["company_clean"].astype(str).str.contains(str(cleaned))
-        ]
-        if len(contains) > 0:
-            return {"id": int(contains.iloc[0]["id"]), "abbr": name[:4].upper()}
-    except:
-        pass
-
-    # Reverse contains (safe)
-    contains_rev = suppliers_df[
-        suppliers_df["company_clean"].apply(lambda x: str(cleaned) in str(x))
-    ]
-    if len(contains_rev) > 0:
-        return {"id": int(contains_rev.iloc[0]["id"]), "abbr": name[:4].upper()}
-
-    return {"id": None, "abbr": ""}
-
 
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (uses PO_OrderRef)
+# PURCHASE ORDER PAYLOAD
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # ref is already "PO-QxxxxSUPP"
-    po_ref = str(ref)
-
+    po_ref = ref
     supplier_name = grp["Supplier"].iloc[0]
     sup = get_supplier_details(supplier_name)
 
     if not sup["id"]:
-        raise Exception(f"Supplier not found in Cin7: '{supplier_name}'")
+        raise Exception(f"Supplier not found: '{supplier_name}'")
 
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
-    line_items = []
+    created_by_user = grp["Created By"].iloc[0]
 
+    line_items = []
     for _, r in grp.iterrows():
-        code = str(r["Item Code"])
-        qty = float(r["Item Qty"] or 0)
-        price = float(r["Item Price"] or 0)
+        code = r["Item Code"]
+        qty = float(r["Item Qty"])
+        price = float(r["Item Cost"])
 
         bom = get_bom(code)
-
         if bom:
             for comp in bom:
                 line_items.append({
@@ -294,8 +253,9 @@ def build_po_payload(ref, grp):
 
     payload = [{
         "reference": po_ref,
-        "supplierId": int(sup["id"]),
+        "supplierId": sup["id"],
         "branchId": branch_id,
+        "staffId": created_by_user,
         "deliveryAddress": "Hardware Direct Warehouse",
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
         "isApproved": True,
@@ -304,28 +264,19 @@ def build_po_payload(ref, grp):
 
     return payload
 
-
 # ---------------------------------------------------------
-# PUSH SALES ORDERS (uses SO_OrderRef internally)
+# PUSHING SALES ORDERS
 # ---------------------------------------------------------
 def push_sales_orders(df):
-
-    df = df.copy()
-    df["Order Ref"] = df["SO_OrderRef"]   # <-- FINAL EXPORT SO VALUE
-
     url = f"{base_url}/v1/SalesOrders?loadboms=false"
-    results = []
     heads = {"Content-Type": "application/json"}
+    results = []
 
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_sales_payload(ref, grp)
-            r = requests.post(
-                url,
-                headers=heads,
-                data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key)
-            )
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                              auth=HTTPBasicAuth(api_username, api_key))
 
             results.append({
                 "Order Ref": ref,
@@ -334,37 +285,23 @@ def push_sales_orders(df):
             })
 
         except Exception as e:
-            results.append({
-                "Order Ref": ref,
-                "Success": False,
-                "Error": str(e)
-            })
+            results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
 
     return results
 
-
 # ---------------------------------------------------------
-# PUSH PURCHASE ORDERS (uses PO_OrderRef internally)
+# PUSHING PURCHASE ORDERS
 # ---------------------------------------------------------
 def push_purchase_orders(df):
-
-    df = df.copy()
-    df["Order Ref"] = df["PO_OrderRef"]   # <-- FINAL EXPORT PO VALUE
-
     url = f"{base_url}/v1/PurchaseOrders"
-    results = []
     heads = {"Content-Type": "application/json"}
+    results = []
 
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_po_payload(ref, grp)
-
-            r = requests.post(
-                url,
-                headers=heads,
-                data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key)
-            )
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                              auth=HTTPBasicAuth(api_username, api_key))
 
             results.append({
                 "Order Ref": ref,
@@ -373,13 +310,10 @@ def push_purchase_orders(df):
             })
 
         except Exception as e:
-            results.append({
-                "Order Ref": ref,
-                "Success": False,
-                "Error": str(e)
-            })
+            results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
 
     return results
+
 # ---------------------------------------------------------
 # LOAD STATIC FILES
 # ---------------------------------------------------------
@@ -391,52 +325,45 @@ subs["Code"] = subs["Code"].apply(clean_code)
 subs["Substitute"] = subs["Substitute"].apply(clean_code)
 
 # ---------------------------------------------------------
-# UI — Upload Files
+# UI — FILE UPLOAD
 # ---------------------------------------------------------
 st.header("📤 Upload ProMaster CSV Files")
 pm_files = st.file_uploader("Upload CSV(s)", type=["csv"], accept_multiple_files=True)
 
 if pm_files:
-
-    buffer = []
+    raw_buffer = []
 
     for file in pm_files:
         fname = file.name
 
-        # Base Sales Order reference
-        order_ref = re.sub(
-            r"_ShipmentProductWithCostsAndPrice\.csv$",
-            "",
-            fname,
-            flags=re.I
-        )
-
-        po_no = order_ref.split(".")[0]
+        order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice\.csv$", "", fname, flags=re.I)
+        po_no = order_ref_base.split(".")[0]
 
         st.subheader(f"📄 {fname}")
 
-        comment = st.text_input(f"Internal comment for {order_ref}", key=f"c-{order_ref}")
-        etd = st.date_input(f"ETD for {order_ref}", datetime.now() + timedelta(days=2))
+        comment = st.text_input(f"Internal comment for {order_ref_base}", key=f"c-{order_ref_base}")
+        etd = st.date_input(f"ETD for {order_ref_base}", datetime.now() + timedelta(days=2))
 
         pm = pd.read_csv(file)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
-        # Substitutions
         pm_sub = pm[pm["PartCode"].isin(subs["Code"].values)]
         if not pm_sub.empty:
             st.info("♻️ Substitutions Found:")
             for _, row in pm_sub.iterrows():
                 orig = row["PartCode"]
                 sub = subs.loc[subs["Code"] == orig, "Substitute"].iloc[0]
-                swap = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"{fname}-{orig}")
+                swap = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"sub-{fname}-{orig}")
                 if swap == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
 
         accs = merged["AccountNumber"].dropna().unique()
+        proj_map = {}
+        rep_map = {}
+        mem_map = {}
 
-        proj_map, rep_map, mem_map = {}, {}, {}
         for acc in accs:
             d = get_contact_data(acc)
             proj_map[acc] = d["projectName"]
@@ -449,64 +376,96 @@ if pm_files:
         merged["Company"] = merged["AccountNumber"]
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
-        # ---------------------------------------------------------
-        # DUAL REF SYSTEM
-        # ---------------------------------------------------------
         for _, r in merged.iterrows():
             supplier = r["Supplier"]
             abbr = clean_supplier_name(supplier)[:4] if supplier else ""
 
-            SO_Ref = order_ref
-            PO_Ref = f"PO-{order_ref}{abbr}"
+            SO_Ref = order_ref_base
+            PO_Ref = f"PO-{order_ref_base}{abbr}"
 
-            buffer.append({
+            raw_buffer.append({
+                # Shared fields
                 "Branch": "Avondale",
-                "Sales Rep": r["Sales Rep"],
-                "Project Name": r["Project Name"],
                 "Company": r["Company"],
+                "Project Name": r["Project Name"],
+                "Sales Rep": r["Sales Rep"],
                 "MemberId": r["MemberId"],
-                "Supplier": supplier,
                 "Internal Comments": comment,
-                "ETD": etd.strftime("%Y-%m-%d"),
                 "Customer PO No": po_no,
+                "Supplier": r["Supplier"],
+                "ETD": etd.strftime("%Y-%m-%d"),
 
+                # Dual refs
                 "SO_OrderRef": SO_Ref,
                 "PO_OrderRef": PO_Ref,
 
+                # Item fields
                 "Item Code": r["PartCode"],
-                "Product Name": r.get("Product Name", ""),
+                "Item Name": r.get("Product Name", ""),
                 "Item Qty": r.get("ProductQuantity", 0),
-                "Item Price": r.get("ProductPrice", 0),
+                "Item Cost": r.get("ProductPrice", 0),
+
                 "OrderFlag": True
             })
 
-    # ---------------------------------------------------------
-    # BUILD FINAL DATAFRAME
-    # ---------------------------------------------------------
-    df = pd.DataFrame(buffer)
+    df = pd.DataFrame(raw_buffer)
 
-    cols = [
-        "Branch", "Sales Rep", "Project Name", "Company", "MemberId",
-        "Supplier", "Internal Comments", "ETD",
+    # ---------------------------------------------------------
+    # SALES ORDER EDITOR
+    # ---------------------------------------------------------
+    st.header("📄 Sales Orders")
+    so_df = df[df["OrderFlag"] == True].copy()
+    so_df["Order Ref"] = so_df["SO_OrderRef"]
+
+    so_cols = [
+        "Order Ref",
+        "Company",
+        "Branch",
+        "Sales Rep",
+        "Project Name",
+        "MemberId",
+        "Item Code",
+        "Item Name",
+        "Item Qty",
+        "Item Cost",
+        "Internal Comments",
         "Customer PO No",
-        "SO_OrderRef", "PO_OrderRef",
-        "Item Code", "Product Name", "Item Qty", "Item Price",
-        "OrderFlag"
+        "ETD"
     ]
 
-    st.subheader("📝 Select Items to Order")
-    edited = st.data_editor(df[cols], num_rows="dynamic")
-
-    final_df = edited[edited["OrderFlag"] == True]
-
-    st.subheader("📦 Final Preview")
-    st.dataframe(final_df)
-
-    st.subheader("🚀 Actions")
+    st.subheader("📝 Sales Order Lines")
+    so_edit = st.data_editor(so_df[so_cols], num_rows="dynamic")
 
     if st.button("🚀 Push Sales Orders"):
-        st.json(push_sales_orders(final_df))
+        st.json(push_sales_orders(so_edit))
+
+    # ---------------------------------------------------------
+    # PURCHASE ORDER EDITOR
+    # ---------------------------------------------------------
+    st.header("📦 Purchase Orders")
+    po_df = df[df["OrderFlag"] == True].copy()
+    po_df["Order Ref"] = po_df["PO_OrderRef"]
+
+    # Add Created By dropdown column
+    po_df["Created By"] = ""
+
+    po_cols = [
+        "Order Ref",
+        "Company",
+        "Created By",
+        "Branch",
+        "Item Code",
+        "Item Name",
+        "Item Qty",
+        "Item Cost",
+        "ETD"
+    ]
+
+    st.subheader("🧾 Purchase Order Lines")
+    po_edit = st.data_editor(po_df[po_cols], num_rows="dynamic")
+
+    # Convert Created By → userId
+    po_edit["Created By"] = po_edit["Created By"].apply(lambda x: user_options.get(x, None))
 
     if st.button("📦 Push Purchase Orders"):
-        st.json(push_purchase_orders(final_df))
-
+        st.json(push_purchase_orders(po_edit))
