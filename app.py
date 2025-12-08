@@ -481,13 +481,7 @@ if pm_files:
         "Item Cost": 0,
     })
 
-    # ---------------------------------------------------------
-    # ADD STOCK LEVEL COLUMNS
-    # ---------------------------------------------------------
-    st.info("⏳ Checking stock levels... (Cin7 API)")
 
-    po_df["SOH_Avondale"] = po_df["Item Code"].apply(lambda x: get_stock_levels(x)["Avondale"])
-    po_df["SOH_Hamilton"] = po_df["Item Code"].apply(lambda x: get_stock_levels(x)["Hamilton"])
 
     # ---------------------------------------------------------
     # TICKBOX TO SELECT LINES TO ORDER
@@ -530,9 +524,6 @@ if pm_files:
     # Filter only selected items
     final_po = po_edit[po_edit["Order?"] == True].copy()
 
-    # Debug preview
-    st.write("🧐 DEBUG — Final PO Rows:", len(final_po))
-    st.dataframe(final_po)
 
     # ---------------------------------------------------------
     # PUSH PURCHASE ORDERS
