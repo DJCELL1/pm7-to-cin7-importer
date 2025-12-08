@@ -140,10 +140,33 @@ def get_supplier_details(name):
 # BOM LOOKUP
 # ---------------------------------------------------------
 def get_bom(code):
-    res = cin7_get("v1/BillsOfMaterials", params={"where": f"code='{code}'"})
-    if res and len(res) > 0:
-        return res[0].get("components", [])
-    return []
+    # First: find BOM master ID
+    search = cin7_get("v1/BomMasters", params={"where": f"code='{code}'"})
+    if not search or len(search) == 0:
+        return []   # no BOM found
+    
+    bom_id = search[0].get("id")
+    if not bom_id:
+        return []
+
+    # Second: fetch the full BOM definition
+    bom_data = cin7_get(f"v1/BomMasters/{bom_id}")
+    if not bom_data:
+        return []
+
+    product = bom_data.get("product", {})
+    components = product.get("components", [])
+
+    # Normalise to your PO system's component format
+    out = []
+    for c in components:
+        out.append({
+            "code": c.get("code"),
+            "quantity": c.get("qty", 1),
+            "unitPrice": c.get("unitCost", 0)
+        })
+
+    return out
 
 # ---------------------------------------------------------
 # CONTACT LOOKUP FOR SALES ORDERS
