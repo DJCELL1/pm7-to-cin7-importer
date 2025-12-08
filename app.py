@@ -184,25 +184,38 @@ def resolve_member_id(member_id, branch):
 def build_sales_payload(ref, grp):
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
-
     mem = grp["MemberId"].iloc[0]
+
+    # pick sales rep — if missing, use added_by_id
+    sales_rep_id = grp["Sales Rep"].iloc[0]
+    if not sales_rep_id:
+        sales_rep_id = added_by_id
 
     return [{
         "isApproved": True,
         "reference": ref,
         "branchId": branch_id,
-        "salesPersonId": added_by_id,
+
+        # REAL creator of the SO
+        "enteredById": added_by_id,
+
+        # Sales rep assignment (optional but useful)
+        "salesPersonId": sales_rep_id,
+
         "memberId": resolve_member_id(mem, branch),
+
         "company": grp["Company"].iloc[0],
         "projectName": grp["Project Name"].iloc[0],
         "internalComments": grp["Internal Comments"].iloc[0],
         "customerOrderNo": grp["Customer PO No"].iloc[0],
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
+
         "currencyCode": "NZD",
         "taxStatus": "Excl",
         "taxRate": 15.0,
         "stage": "New",
         "priceTier": "Trade (NZD - Excl)",
+
         "lineItems": [
             {
                 "code": r["Item Code"],
@@ -212,6 +225,7 @@ def build_sales_payload(ref, grp):
             for _, r in grp.iterrows()
         ]
     }]
+
 
 # ---------------------------------------------------------
 # PO PAYLOAD
@@ -223,6 +237,7 @@ def build_po_payload(ref, grp):
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
+    # Build line items with BOM support
     line_items = []
     for _, r in grp.iterrows():
         code = r["Item Code"]
@@ -248,10 +263,17 @@ def build_po_payload(ref, grp):
         "reference": ref,
         "supplierId": sup["id"],
         "branchId": branch_id,
-        "staffId": added_by_id,  # ← GLOBAL ADDED BY
+
+        # This is the actual PO creator
+        "staffId": added_by_id,
+
+        # Added for consistency with SOs
+        "enteredById": added_by_id,
+
         "deliveryAddress": "Hardware Direct Warehouse",
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
         "isApproved": True,
+
         "lineItems": line_items
     }]
 
