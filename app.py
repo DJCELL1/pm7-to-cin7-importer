@@ -10,8 +10,8 @@ from difflib import SequenceMatcher
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
-st.set_page_config(page_title="ProMaster → Cin7 Importer v51", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v51 — Override Codes, Auto Re-Lookup, BOM v2")
+st.set_page_config(page_title="ProMaster → Cin7 Importer v50", layout="wide")
+st.title("🧱 ProMaster → Cin7 Importer v50 — Global Added By + SO/PO Auto Staff")
 
 # ---------------------------------------------------------
 # CIN7 SECRETS
@@ -28,7 +28,7 @@ branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
 # ---------------------------------------------------------
-# BASIC HELPERS
+# HELPERS
 # ---------------------------------------------------------
 def clean_code(x):
     if pd.isna(x):
@@ -49,11 +49,9 @@ def cin7_get(endpoint, params=None):
     url = f"{base_url}/{endpoint}"
     r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key))
     if r.status_code == 200:
-        try:
-            return r.json()
-        except:
-            return None
+        return r.json()
     return None
+
 # ---------------------------------------------------------
 # USERS (For Added By selector)
 # ---------------------------------------------------------
@@ -63,8 +61,7 @@ def get_users_map():
         return {}
     return {
         u["id"]: f"{u.get('firstName','')} {u.get('lastName','')}".strip()
-        for u in users
-        if u.get("isActive", True)
+        for u in users if u.get("isActive", True)
     }
 
 users_map = get_users_map()
@@ -88,6 +85,7 @@ st.sidebar.success(f"Using Staff ID: {added_by_id}")
 def load_all_suppliers():
     res = cin7_get("v1/Contacts", params={"where": "type='Supplier'"})
     if not res:
+        st.error("❌ Cin7 returned NO suppliers via type='Supplier'.")
         return pd.DataFrame(columns=["id", "company", "company_clean"])
 
     df = pd.DataFrame(res)
@@ -139,30 +137,28 @@ def get_supplier_details(name):
     )
 
 # ---------------------------------------------------------
-# BOM LOOKUP (Correct v2 BomMasters)
+# BOM LOOKUP
 # ---------------------------------------------------------
-def get_bom(code):
-    # Find BOM master using v2 endpoint
-    search = cin7_get("v2/BomMasters", params={"where": f"code='{code}'"})
-    if not search or len(search) == 0:
-        return []
 
+def get_bom(code):
+    # First: find BOM master ID
+    search = cin7_get("v1/BomMasters", params={"where": f"code='{code}'"})
+    if not search or len(search) == 0:
+        return []   # no BOM found
+    
     bom_id = search[0].get("id")
     if not bom_id:
         return []
 
-    # Load BOM details
-    bom = cin7_get(f"v2/BomMasters/{bom_id}")
-    if not bom:
+    # Second: fetch the full BOM definition
+    bom_data = cin7_get(f"v1/BomMasters/{bom_id}")
+    if not bom_data:
         return []
 
-    products = bom.get("products", [])
-    if not products:
-        return []
+    product = bom_data.get("product", {})
+    components = product.get("components", [])
 
-    parent = products[0]
-    components = parent.get("components", [])
-
+    # Normalise to your PO system's component format
     out = []
     for c in components:
         out.append({
@@ -191,7 +187,7 @@ def get_contact_data(company_name):
     if res and len(res) > 0:
         c = res[0]
         return {
-            "projectName": c.get("firstName", ""),
+            "projectName": c.get("firstName",""),
             "salesPersonId": c.get("salesPersonId"),
             "memberId": c.get("id")
         }
@@ -207,39 +203,31 @@ def resolve_member_id(member_id, branch):
     return branch_Hamilton_default_member if branch == "Hamilton" else branch_Avondale_default_member
 
 # ---------------------------------------------------------
-# SALES ORDER PAYLOAD (uses Override Code)
+# SALES PAYLOAD
 # ---------------------------------------------------------
 def build_sales_payload(ref, grp):
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
+    mem = grp["MemberId"].iloc[0]
 
-    member_id = grp["MemberId"].iloc[0]
-    resolved_mem = resolve_member_id(member_id, branch)
-
+    # pick sales rep — if missing, use added_by_id
     sales_rep_id = grp["Sales Rep"].iloc[0]
     if not sales_rep_id:
         sales_rep_id = added_by_id
-
-    # Build clean line items using override code
-    line_items = []
-    for _, r in grp.iterrows():
-        code = r.get("Override Code") or r["Item Code"]
-        qty = float(r["Item Qty"])
-        price = float(r["Item Cost"])
-
-        line_items.append({
-            "code": code,
-            "qty": qty,
-            "unitPrice": price
-        })
 
     return [{
         "isApproved": True,
         "reference": ref,
         "branchId": branch_id,
+
+        # REAL creator of the SO
         "enteredById": added_by_id,
+
+        # Sales rep assignment (optional but useful)
         "salesPersonId": sales_rep_id,
-        "memberId": resolved_mem,
+
+        "memberId": resolve_member_id(mem, branch),
+
         "company": grp["Company"].iloc[0],
         "projectName": grp["Project Name"].iloc[0],
         "internalComments": grp["Internal Comments"].iloc[0],
@@ -252,52 +240,51 @@ def build_sales_payload(ref, grp):
         "stage": "New",
         "priceTier": "Trade (NZD - Excl)",
 
-        "lineItems": line_items
+        "lineItems": [
+            {
+                "code": r["Item Code"],
+                "qty": float(r["Item Qty"]),
+                "unitPrice": float(r["Item Cost"])
+            }
+            for _, r in grp.iterrows()
+        ]
     }]
 
 
 # ---------------------------------------------------------
-# PURCHASE ORDER PAYLOAD (Override Code + v2 BOM Explosion)
+# PO PAYLOAD
 # ---------------------------------------------------------
 def build_po_payload(ref, grp):
-    # Supplier fuzzy match
+    # Get supplier details via fuzzy match
     supplier = grp["Supplier"].iloc[0]
     sup = get_supplier_details(supplier)
 
-    # Branch resolution
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
-    # ============================
-    # BUILD LINE ITEMS
-    # ============================
+    # =====================================
+    # LINE ITEMS (with BOM v2 support)
+    # =====================================
     line_items = []
 
     for _, r in grp.iterrows():
-        # PRIORITY: Override Code → fallback to Item Code
-        parent_code = r.get("Override Code") or r["Item Code"]
+        parent_code = r["Item Code"]
         qty_ordered = float(r["Item Qty"])
         price_parent = float(r["Item Cost"])
 
-        # -----------------------------
-        # VALIDATE THE OVERRIDE CODE
-        # If it's not in products.csv → BLOCK
-        # -----------------------------
-        if parent_code not in products["Code"].values:
-            raise Exception(f"Invalid Override Code '{parent_code}' — not found in Products.csv")
-
-        # -----------------------------
-        # BOM LOOKUP (v2 BomMasters)
-        # -----------------------------
-        bom_components = get_bom(parent_code)
+        # -------------------------------------
+        # Pull BOM from v2/BomMasters
+        # -------------------------------------
+        bom_components = get_bom(parent_code)   # uses your NEW v2 version
 
         if bom_components:
-            # ----- BOM EXPLOSION -----
+            # Parent has BOM – explode components
             for comp in bom_components:
                 comp_code = comp.get("code")
                 comp_qty = comp.get("quantity", 1)
                 comp_price = comp.get("unitPrice", 0)
 
+                # Multiply component qty by parent qty
                 exploded_qty = comp_qty * qty_ordered
 
                 line_items.append({
@@ -307,54 +294,99 @@ def build_po_payload(ref, grp):
                 })
 
         else:
-            # ----- SIMPLE LINE ITEM -----
+            # No BOM → normal product, add directly
             line_items.append({
                 "code": parent_code,
                 "qty": qty_ordered,
                 "unitPrice": price_parent
             })
 
-    # ============================
-    # FINAL PO PAYLOAD
-    # ============================
+    # =====================================
+    # FINAL PAYLOAD
+    # =====================================
     return [{
         "reference": ref,
         "supplierId": sup["id"],
         "branchId": branch_id,
 
-        # Cin7 requires memberId for PO; supplier ID is allowed
+        # Cin7 requires a memberId for PO – use supplier ID
         "memberId": sup["id"],
 
+        # Who created it
         "staffId": added_by_id,
         "enteredById": added_by_id,
 
+        # Delivery info
         "deliveryAddress": "Hardware Direct Warehouse",
         "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
 
         "isApproved": True,
+
         "lineItems": line_items
     }]
 # ---------------------------------------------------------
-# LOAD STATIC FILES (PRODUCTS + SUBSTITUTIONS)
+# PUSH SO
+# ---------------------------------------------------------
+def push_sales_orders(df):
+    url = f"{base_url}/v1/SalesOrders?loadboms=false"
+    heads = {"Content-Type": "application/json"}
+    results = []
+
+    for ref, grp in df.groupby("Order Ref"):
+        try:
+            payload = build_sales_payload(ref, grp)
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                              auth=HTTPBasicAuth(api_username, api_key))
+            results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
+        except Exception as e:
+            results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
+    return results
+
+# ---------------------------------------------------------
+# PUSH PO
+# ---------------------------------------------------------
+def push_purchase_orders(df):
+    url = f"{base_url}/v1/PurchaseOrders"
+    heads = {"Content-Type": "application/json"}
+    results = []
+
+    for ref, grp in df.groupby("Order Ref"):
+        try:
+            payload = build_po_payload(ref, grp)
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                              auth=HTTPBasicAuth(api_username, api_key))
+            results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
+        except Exception as e:
+            results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
+    return results
+
+# ---------------------------------------------------------
+# LOAD STATIC FILES
 # ---------------------------------------------------------
 products = pd.read_csv("Products.csv")
-subs = pd.read_excel("Substitutes.xlsx")
+# ---------------------------------------------------------
+# LOAD SUBSTITUTIONS FROM GOOGLE SHEETS (LIVE)
+# ---------------------------------------------------------
+SUBS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTQts9hk9AShPbwgyJSDLgKiT9ql0Lndql3FRpUS528pYOxlPQM7HZsJD10mvul-aXi1T86BECEbY3Z/pub?output=csv"
 
-products["Code"] = products["Code"].apply(clean_code)
-subs["Code"] = subs["Code"].apply(clean_code)
-subs["Substitute"] = subs["Substitute"].apply(clean_code)
+@st.cache_data(ttl=60)
+def load_substitutions():
+    df = pd.read_csv(SUBS_URL)
+    df["Code"] = df["Code"].apply(clean_code)
+    df["Substitute"] = df["Substitute"].apply(clean_code)
+    return df
 
-# Helper for name + price after override
-def lookup_product_details(code):
-    """Return (name, cost) from Products.csv based on override code."""
-    row = products[products["Code"] == code]
-    if row.empty:
-        return None, None
-    return row["Product Name"].iloc[0], row["ProductPrice"].iloc[0]
+# Load subs
+subs = load_substitutions()
 
+# Refresh WITHOUT nuking the whole session
+if st.sidebar.button("🔄 Refresh Substitutions"):
+    load_substitutions.clear()       # Only clear THIS cache
+    subs = load_substitutions()      # Reload fresh
+    st.sidebar.success("✔ Substitutions refreshed (no reset)")
 
 # ---------------------------------------------------------
-# UI — UPLOAD PM7 CSV FILES
+# UI — UPLOAD
 # ---------------------------------------------------------
 st.header("📤 Upload ProMaster CSV Files")
 pm_files = st.file_uploader("Upload CSV(s)", type=["csv"], accept_multiple_files=True)
@@ -375,13 +407,10 @@ if pm_files:
         comment = st.text_input(f"Internal comment for {order_ref_base}", key=f"c-{order_ref_base}")
         etd = st.date_input(f"ETD for {order_ref_base}", datetime.now() + timedelta(days=2))
 
-        # Load PM7 sheet
         pm = pd.read_csv(file)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
-        # ---------------------------------------------------------
-        # APPLY SUBSTITUTIONS (PM7 → substitute codes)
-        # ---------------------------------------------------------
+        # substitutions
         hits = pm[pm["PartCode"].isin(subs["Code"].values)]
         if not hits.empty:
             st.info("♻️ Substitutions Found:")
@@ -392,29 +421,8 @@ if pm_files:
                 if choice == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
-        # ---------------------------------------------------------
-        # MERGE WITH PRODUCTS TO PICK UP NAME + COST
-        # ---------------------------------------------------------
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
 
-        # ---------------------------------------------------------
-        # ADD OVERRIDE CODE COLUMN
-        # ---------------------------------------------------------
-        merged["Override Code"] = merged["PartCode"]
-
-        # Add Original Code (for debugging)
-        merged["Original Code"] = merged["PartCode"]
-
-        # ---------------------------------------------------------
-        # AUTO-LOOKUP to ensure we have name + cost even AFTER override
-        # (Later, user can modify override and we will re-lookup)
-        # ---------------------------------------------------------
-        merged["Lookup Name"] = merged["Product Name"]
-        merged["Lookup Cost"] = merged["ProductPrice"]
-
-        # --------------------------------------------------------------------
-        # CONTACT LOOKUP VALUES (Project Name, Sales Rep, Member ID)
-        # --------------------------------------------------------------------
         accounts = merged["AccountNumber"].dropna().unique()
         proj_map = {}
         rep_map = {}
@@ -432,9 +440,6 @@ if pm_files:
         merged["Company"] = merged["AccountNumber"]
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
 
-        # ---------------------------------------------------------
-        # BUILD BUFFER ROWS FOR SO + PO
-        # ---------------------------------------------------------
         for _, r in merged.iterrows():
             supplier = r["Supplier"]
             abbr = clean_supplier_name(supplier)[:4] if supplier else ""
@@ -456,241 +461,136 @@ if pm_files:
                 "SO_OrderRef": SO_ref,
                 "PO_OrderRef": PO_ref,
 
-                # ITEM FIELDS (override-aware)
-                "Item Code": r["PartCode"],          # original
-                "Override Code": r["Override Code"], # editable
-                "Item Name": r["Lookup Name"],
+                "Item Code": r["PartCode"],
+                "Item Name": r.get("Product Name", ""),
                 "Item Qty": r.get("ProductQuantity", 0),
                 "Item Cost": r.get("ProductPrice", 0),
-
                 "OrderFlag": True
             })
 
     df = pd.DataFrame(buffer)
-# ---------------------------------------------------------
-# SALES ORDERS TABLE
-# ---------------------------------------------------------
-st.header("📄 Sales Orders")
 
-so_df = df[df["OrderFlag"] == True].copy()
-so_df["Order Ref"] = so_df["SO_OrderRef"]
+    # ---------------------------------------------------------
+    # SALES ORDERS TABLE
+    # ---------------------------------------------------------
+    st.header("📄 Sales Orders")
 
-# These columns are editable by the user
-so_cols = [
-    "Order Ref", "Company", "Branch", "Sales Rep",
-    "Project Name", "MemberId",
-    "Item Code", "Override Code", "Item Name", "Item Qty", "Item Cost",
-    "Internal Comments", "Customer PO No", "ETD"
-]
+    so_df = df[df["OrderFlag"] == True].copy()
+    so_df["Order Ref"] = so_df["SO_OrderRef"]
 
-st.subheader("📝 Sales Order Lines (Editable)")
+    so_cols = [
+        "Order Ref", "Company", "Branch", "Sales Rep",
+        "Project Name", "MemberId",
+        "Item Code", "Item Name", "Item Qty", "Item Cost",
+        "Internal Comments", "Customer PO No", "ETD"
+    ]
 
-# -------------------------------
-# USER EDITS THIS TABLE
-# -------------------------------
-so_edit = st.data_editor(
-    so_df[so_cols],
-    num_rows="dynamic",
-    column_config={
-        "Item Code": st.column_config.TextColumn(disabled=True),
-        "Override Code": st.column_config.TextColumn(help="Change this to override the item"),
-        "Item Name": st.column_config.TextColumn(disabled=True),
-        "Item Cost": st.column_config.NumberColumn(disabled=True),
-    }
-)
+    st.subheader("📝 Sales Order Lines")
+    so_edit = st.data_editor(so_df[so_cols], num_rows="dynamic")
 
-# ---------------------------------------------------------
-# RE-LOOKUP NAME + COST IF OVERRIDE CODE IS CHANGED
-# ---------------------------------------------------------
-for idx in so_edit.index:
-    override = so_edit.at[idx, "Override Code"]
+    if st.button("🚀 Push Sales Orders", key="push_so"):
+        st.json(push_sales_orders(so_edit))
 
-    # Clean and validate override
-    override_clean = clean_code(override)
-    so_edit.at[idx, "Override Code"] = override_clean
+    
+    # ---------------------------------------------------------
+    # STOCK ON HAND LOOKUP
+    # ---------------------------------------------------------
+    def get_stock_levels(code):
+        """Returns SOH for Avondale and Hamilton for a given product code."""
+        if not code:
+            return {"Avondale": 0, "Hamilton": 0}
 
-    # If invalid → block later in payload step
-    if override_clean in products["Code"].values:
-        # Lookup new details
-        new_name, new_cost = lookup_product_details(override_clean)
+        res = cin7_get("v1/Products", params={
+            "where": f"code='{code}'",
+            "loadinventory": "true"
+        })
 
-        if new_name is not None:
-            so_edit.at[idx, "Item Name"] = new_name
-        if new_cost is not None:
-            so_edit.at[idx, "Item Cost"] = new_cost
+        if not res:
+            return {"Avondale": 0, "Hamilton": 0}
 
-# ---------------------------------------------------------
-# PUSH SALES ORDERS BUTTON
-# ---------------------------------------------------------
-if st.button("🚀 Push Sales Orders", key="push_so"):
-    st.subheader("Cin7 Sales Order Results")
+        inv_list = res[0].get("inventory", [])
+        out = {"Avondale": 0, "Hamilton": 0}
 
-    result = push_sales_orders(so_edit)
+        for loc in inv_list:
+            name = loc.get("locationName", "").upper()
+            qty = loc.get("stockOnHand", 0)
 
-    for r in result:
-        order_ref = r.get("Order Ref", "UNKNOWN")
-        success = r.get("Success", False)
+            if "AVONDALE" in name:
+                out["Avondale"] = qty
+            elif "HAMILTON" in name:
+                out["Hamilton"] = qty
 
-        if success:
-            st.success(f"{order_ref} — Successfully created in Cin7")
-        else:
-            st.error(f"{order_ref} — Failed: {r.get('Error') or r.get('Response')}")
-# ---------------------------------------------------------
-# PURCHASE ORDERS TABLE (OVERRIDE + BOM)
-# ---------------------------------------------------------
-st.header("📦 Purchase Orders")
+        return out
+  
 
-po_df = df[df["OrderFlag"] == True].copy()
-po_df["Order Ref"] = po_df["PO_OrderRef"]
+    # ---------------------------------------------------------
+    # PURCHASE ORDERS TABLE (NO SOH LOOKUP)
+    # ---------------------------------------------------------
+    st.header("📦 Purchase Orders (SOH Removed)")
 
-# Ensure clean defaults
-po_df = po_df.fillna({
-    "Supplier": "",
-    "Item Name": "",
-    "Item Code": "",
-    "Override Code": "",
-    "Item Qty": 0,
-    "Item Cost": 0,
-})
+    # Base DF for POs
+    po_df = df[df["OrderFlag"] == True].copy()
+    po_df["Order Ref"] = po_df["PO_OrderRef"]
 
-# Columns to display/edit
-po_cols = [
-    "Order Ref", "Company", "Branch", "Supplier",
-    "Item Code", "Override Code", "Item Name", "Item Qty", "Item Cost", "ETD",
-    "Order?"
-]
+    # Clean defaults
+    po_df = po_df.fillna({
+        "Supplier": "",
+        "Item Name": "",
+        "Item Code": "",
+        "Item Qty": 0,
+        "Item Cost": 0,
+    })
 
-# Default order flag = TRUE for everything
-po_df["Order?"] = True
+    # ---------------------------------------------------------
+    # REMOVE STOCK LOGIC — Order? defaults to True
+    # ---------------------------------------------------------
+    po_df["Order?"] = True
 
-st.subheader("🧾 Purchase Order Lines (Editable)")
+    # ---------------------------------------------------------
+    # DISPLAY PO TABLE (NO SOH COLUMNS)
+    # ---------------------------------------------------------
+    po_display = po_df[[
+        "Order Ref", "Company", "Branch", "Supplier",
+        "Item Code", "Item Name", "Item Qty", "Item Cost", "ETD",
+        "Order?"
+    ]]
 
-# ---------------------------------------------------------
-# USER EDITS PO TABLE
-# ---------------------------------------------------------
-po_edit = st.data_editor(
-    po_df[po_cols],
-    num_rows="fixed",
-    column_config={
-        "Supplier": st.column_config.TextColumn(disabled=True),
-        "Order Ref": st.column_config.TextColumn(disabled=True),
-        "Company": st.column_config.TextColumn(disabled=True),
-        "Branch": st.column_config.TextColumn(disabled=True),
-        "Item Code": st.column_config.TextColumn(disabled=True),
-        "Override Code": st.column_config.TextColumn(help="Change this to override the item"),
-        "Order?": st.column_config.CheckboxColumn(),
-        "Item Name": st.column_config.TextColumn(disabled=True),
-        "Item Cost": st.column_config.NumberColumn(disabled=True),
-    }
-)
+    st.subheader("🧾 Purchase Order Lines (No SOH)")
 
-# ---------------------------------------------------------
-# RE-LOOKUP NAME + COST WHEN OVERRIDE CHANGES
-# ---------------------------------------------------------
-for idx in po_edit.index:
-    override = po_edit.at[idx, "Override Code"]
-    override_clean = clean_code(override)
-    po_edit.at[idx, "Override Code"] = override_clean
+    po_edit = st.data_editor(
+        po_display,
+        num_rows="fixed",
+        column_config={
+            "Supplier": st.column_config.TextColumn(disabled=True),
+            "Order Ref": st.column_config.TextColumn(disabled=True),
+            "Company": st.column_config.TextColumn(disabled=True),
+            "Branch": st.column_config.TextColumn(disabled=True),
+            "Order?": st.column_config.CheckboxColumn(),
+        }
+    )
 
-    if override_clean in products["Code"].values:
-        new_name, new_cost = lookup_product_details(override_clean)
+    # Filter items selected for ordering
+    final_po = po_edit[po_edit["Order?"] == True].copy()
 
-        if new_name is not None:
-            po_edit.at[idx, "Item Name"] = new_name
-        if new_cost is not None:
-            po_edit.at[idx, "Item Cost"] = new_cost
+    # Debug
+    st.write("🧐 DEBUG — Final PO Count:", len(final_po))
+    st.dataframe(final_po)
 
-# ---------------------------------------------------------
-# FILTER ONLY LINES SELECTED TO ORDER
-# ---------------------------------------------------------
-final_po = po_edit[po_edit["Order?"] == True].copy()
+    # ---------------------------------------------------------
+    # PUSH PURCHASE ORDERS (CLEAN OUTPUT)
+    # ---------------------------------------------------------
+    if st.button("📦 Push Purchase Orders", key="push_po"):
+        res = push_purchase_orders(final_po)
 
-st.write("🧐 DEBUG — Final PO Count:", len(final_po))
-st.dataframe(final_po)
+        # Show a clean summary only
+        st.subheader("Cin7 Purchase Order Results")
 
-# ---------------------------------------------------------
-# PUSH PURCHASE ORDERS (USING BOM v2 + OVERRIDE)
-# ---------------------------------------------------------
-if st.button("📦 Push Purchase Orders", key="push_po"):
-    st.subheader("Cin7 Purchase Order Results")
+        for r in res:
+            order_ref = r.get("Order Ref", "UNKNOWN")
+            success = r.get("Success", False)
 
-    try:
-        result = push_purchase_orders(final_po)
-    except Exception as e:
-        st.error(f"PO Build Error: {str(e)}")
-        st.stop()
-
-    for r in result:
-        order_ref = r.get("Order Ref", "UNKNOWN")
-        success = r.get("Success", False)
-
-        if success:
-            st.success(f"{order_ref} — Successfully created in Cin7")
-        else:
-            st.error(f"{order_ref} — Failed: {r.get('Error') or r.get('Response')}")
-# ---------------------------------------------------------
-# PUSH SALES ORDERS
-# ---------------------------------------------------------
-def push_sales_orders(df):
-    url = f"{base_url}/v1/SalesOrders?loadboms=false"
-    heads = {"Content-Type": "application/json"}
-    results = []
-
-    for ref, grp in df.groupby("Order Ref"):
-        try:
-            payload = build_sales_payload(ref, grp)
-            r = requests.post(url, headers=heads, data=json.dumps(payload),
-                              auth=HTTPBasicAuth(api_username, api_key))
-
-            results.append({
-                "Order Ref": ref,
-                "Success": r.status_code == 200,
-                "Response": r.text
-            })
-
-        except Exception as e:
-            results.append({
-                "Order Ref": ref,
-                "Success": False,
-                "Error": str(e)
-            })
-
-    return results
-
-
-# ---------------------------------------------------------
-# PUSH PURCHASE ORDERS
-# ---------------------------------------------------------
-def push_purchase_orders(df):
-    url = f"{base_url}/v1/PurchaseOrders"
-    heads = {"Content-Type": "application/json"}
-    results = []
-
-    for ref, grp in df.groupby("Order Ref"):
-        try:
-            payload = build_po_payload(ref, grp)
-            r = requests.post(url, headers=heads, data=json.dumps(payload),
-                              auth=HTTPBasicAuth(api_username, api_key))
-
-            results.append({
-                "Order Ref": ref,
-                "Success": r.status_code == 200,
-                "Response": r.text
-            })
-
-        except Exception as e:
-            results.append({
-                "Order Ref": ref,
-                "Success": False,
-                "Error": str(e)
-            })
-
-    return results
-
-
-# ---------------------------------------------------------
-# FINAL MESSAGE (Optional)
-# ---------------------------------------------------------
-st.success("Importer Ready — SO & PO modules loaded with Overrides + BOM v2.")
-
+            if success:
+                st.success(f"{order_ref} — Successfully created in Cin7")
+            else:
+                st.error(f"{order_ref} — Failed: {r.get('Error') or r.get('Response')}")
 
