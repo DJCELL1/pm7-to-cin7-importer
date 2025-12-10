@@ -445,9 +445,14 @@ if pm_files:
                 if new and new.strip() != "":
                     merged.loc[merged["PartCode"] == orig, "PartCode"] = clean_code(new)
 
+            # preserve Supplier column before re-merge
+            supplier_col = merged["Supplier"].copy()
+
             # Re-merge with products after overrides
             merged = pd.merge(merged.drop(columns=["Code"]), products, 
                       left_on="PartCode", right_on="Code", how="left")
+            # restore supplier column after merge
+            merged["Supplier"] = supplier_col
 
             # If still missing anything → BLOCK THE PROCESS
             still_missing = merged[merged["Code"].isna()]["PartCode"].unique()
