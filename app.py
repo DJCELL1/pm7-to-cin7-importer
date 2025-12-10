@@ -422,39 +422,39 @@ if pm_files:
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
-# ---------------------------------------------------------
-# SAFETY CHECK: PRODUCT CODE NOT FOUND IN PRODUCTS.CSV
-# ---------------------------------------------------------
-missing_codes = merged[merged["Code"].isna()]["PartCode"].unique()
+        # ---------------------------------------------------------
+        # SAFETY CHECK: PRODUCT CODE NOT FOUND IN PRODUCTS.CSV
+        # ---------------------------------------------------------
+        missing_codes = merged[merged["Code"].isna()]["PartCode"].unique()
 
-if len(missing_codes) > 0:
-    st.error("❌ Some product codes are NOT in Products.csv")
-    st.write("You must manually confirm or override these BEFORE continuing.")
+        if len(missing_codes) > 0:
+            st.error("❌ Some product codes are NOT in Products.csv")
+            st.write("You must manually confirm or override these BEFORE continuing.")
 
-    overrides = {}
-    for code in missing_codes:
-        st.warning(f"Code not found: {code}")
-        override = st.text_input(
-            f"Enter correct code for {code} (or leave blank to block)",
-            key=f"override-{code}"
-        )
-        overrides[code] = override
+            overrides = {}
+            for code in missing_codes:
+                st.warning(f"Code not found: {code}")
+                override = st.text_input(
+                    f"Enter correct code for {code} (or leave blank to block)",
+                    key=f"override-{code}"
+                )
+                overrides[code] = override
 
-    # Apply overrides
-    for orig, new in overrides.items():
-        if new and new.strip() != "":
-            merged.loc[merged["PartCode"] == orig, "PartCode"] = clean_code(new)
+            # Apply overrides
+            for orig, new in overrides.items():
+                if new and new.strip() != "":
+                    merged.loc[merged["PartCode"] == orig, "PartCode"] = clean_code(new)
 
-    # Re-merge with products after overrides
-    merged = pd.merge(merged.drop(columns=["Code"]), products, 
+            # Re-merge with products after overrides
+            merged = pd.merge(merged.drop(columns=["Code"]), products, 
                       left_on="PartCode", right_on="Code", how="left")
 
-    # If still missing anything → BLOCK THE PROCESS
-    still_missing = merged[merged["Code"].isna()]["PartCode"].unique()
-    if len(still_missing) > 0:
-        st.error("❌ These codes STILL do not exist after override:")
-        st.write(still_missing)
-        st.stop()  # Hard stop so nobody pushes garbage
+            # If still missing anything → BLOCK THE PROCESS
+            still_missing = merged[merged["Code"].isna()]["PartCode"].unique()
+            if len(still_missing) > 0:
+                st.error("❌ These codes STILL do not exist after override:")
+                st.write(still_missing)
+                st.stop()  # Hard stop so nobody pushes garbage
 
 
         accounts = merged["AccountNumber"].dropna().unique()
