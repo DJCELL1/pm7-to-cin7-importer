@@ -178,7 +178,7 @@ def get_contact_data(account_number):
 
     acc = str(account_number).strip()
 
-    # Try accountNumber FIRST (this is the correct key)
+    # 1️⃣ Match by accountNumber (correct primary key)
     res = cin7_get(
         "v1/Contacts",
         params={"where": f"accountNumber='{acc}'"}
@@ -187,12 +187,13 @@ def get_contact_data(account_number):
     if res and len(res) > 0:
         c = res[0]
         return {
-            "projectName": c.get("company", ""),
+            # 👇 PROJECT NAME LIVES HERE
+            "projectName": c.get("firstName", ""),
             "salesPersonId": c.get("salesPersonId"),
             "memberId": c.get("id")
         }
 
-    # Fallback: try reference (some older Cin7 setups use this)
+    # 2️⃣ Fallback: reference
     res = cin7_get(
         "v1/Contacts",
         params={"where": f"reference='{acc}'"}
@@ -201,7 +202,7 @@ def get_contact_data(account_number):
     if res and len(res) > 0:
         c = res[0]
         return {
-            "projectName": c.get("company", ""),
+            "projectName": c.get("firstName", ""),
             "salesPersonId": c.get("salesPersonId"),
             "memberId": c.get("id")
         }
