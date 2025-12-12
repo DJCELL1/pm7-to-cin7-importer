@@ -172,22 +172,36 @@ def get_bom(code):
 # ---------------------------------------------------------
 # CONTACT LOOKUP FOR SALES ORDERS
 # ---------------------------------------------------------
-def get_contact_data(company_name):
-    def clean_text(s):
-        if not s:
-            return ""
-        return re.sub(r"\s+", " ", str(s).upper().strip())
-
-    if not company_name:
+def get_contact_data(account_number):
+    if not account_number or pd.isna(account_number):
         return {"projectName": "", "salesPersonId": None, "memberId": None}
 
-    cleaned = clean_text(company_name)
+    acc = str(account_number).strip()
 
-    res = cin7_get("v1/Contacts", params={"where": f"company='{cleaned}'"})
+    # Try accountNumber FIRST (this is the correct key)
+    res = cin7_get(
+        "v1/Contacts",
+        params={"where": f"accountNumber='{acc}'"}
+    )
+
     if res and len(res) > 0:
         c = res[0]
         return {
-            "projectName": c.get("firstName",""),
+            "projectName": c.get("company", ""),
+            "salesPersonId": c.get("salesPersonId"),
+            "memberId": c.get("id")
+        }
+
+    # Fallback: try reference (some older Cin7 setups use this)
+    res = cin7_get(
+        "v1/Contacts",
+        params={"where": f"reference='{acc}'"}
+    )
+
+    if res and len(res) > 0:
+        c = res[0]
+        return {
+            "projectName": c.get("company", ""),
             "salesPersonId": c.get("salesPersonId"),
             "memberId": c.get("id")
         }
