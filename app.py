@@ -645,37 +645,37 @@ if pm_files:
 
             st.dataframe(credit_df[credit_cols])
 
-            # ---------------------------------------------------------
-            # PUSH CREDIT NOTES (CLEAN OUTPUT)
-            # ---------------------------------------------------------
-            if st.button("💳 Push Credit Notes"):
-                results = push_credit_notes(credit_df)
+        # ---------------------------------------------------------
+        # PUSH CREDIT NOTES (CLEAN OUTPUT)
+        # ---------------------------------------------------------
+        if st.button("💳 Push Credit Notes"):
+            results = push_credit_notes(credit_df)
 
-                st.subheader("Credit Note Results")
+            st.subheader("Credit Note Results")
 
-                for r in results:
-                    order_ref = r.get("Order Ref", "UNKNOWN")
-                    success = r.get("Success", False)
-                    raw = r.get("Response", "{}")
+            for r in results:
+                order_ref = r.get("Order Ref", "UNKNOWN")
+                success = r.get("Success", False)
+                raw = r.get("Response", "{}")
 
-                    # Attempt to parse Cin7's JSON response
-                    try:
-                        parsed = json.loads(raw)[0]
-                    except Exception:
-                        parsed = {}
+                # Attempt to parse Cin7's JSON response
+                try:
+                    parsed = json.loads(raw)[0]
+                except Exception:
+                    parsed = {}
 
-                    errors = parsed.get("errors", []) if isinstance(parsed, dict) else []
+                errors = parsed.get("errors", []) if isinstance(parsed, dict) else []
 
-                    if success and not errors:
-                        st.success(f"✔ Credit Note for {order_ref} created successfully.")
+                if success and not errors:
+                    st.success(f"✔ Credit Note for {order_ref} created successfully.")
+                else:
+                    st.error(f"❌ Credit Note for {order_ref} failed.")
+
+                    if errors:
+                        for err in errors:
+                            st.warning(f"- {err}")
                     else:
-                        st.error(f"❌ Credit Note for {order_ref} failed.")
-
-                        if errors:
-                            for err in errors:
-                                st.warning(f"- {err}")
-                        else:
-                            st.warning("No detailed error returned from Cin7.")
+                        st.warning("No detailed error returned from Cin7.")
     
     # ---------------------------------------------------------
     # STOCK ON HAND LOOKUP
