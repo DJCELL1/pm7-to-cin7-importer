@@ -629,25 +629,25 @@ if pm_files:
     if st.button("🚀 Push Sales Orders", key="push_so"):
         st.json(push_sales_orders(so_edit))
 
-        # ---------------------------------------------------------
-        # CREDIT NOTES TABLE
-        # ---------------------------------------------------------
-        if not credit_df.empty:
-            st.header("💳 Credit Notes")
+    # ---------------------------------------------------------
+    # CREDIT NOTES TABLE
+    # ---------------------------------------------------------
+    if not credit_df.empty:
+        st.header("💳 Credit Notes")
 
-            credit_df["Order Ref"] = credit_df["SO_OrderRef"]
+        credit_df["Order Ref"] = credit_df["SO_OrderRef"]
 
-            credit_cols = [
-                "Order Ref", "Company", "Branch",
-                "Project Name", "Item Code", "Item Name",
-                "Item Qty", "Item Cost", "Internal Comments"
-            ]
+        credit_cols = [
+            "Order Ref", "Company", "Branch",
+            "Project Name", "Item Code", "Item Name",
+            "Item Qty", "Item Cost", "Internal Comments"
+        ]
 
-            st.dataframe(credit_df[credit_cols])
+        st.dataframe(credit_df[credit_cols])
 
-        # ---------------------------------------------------------
-        # PUSH CREDIT NOTES (CLEAN OUTPUT)
-        # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # PUSH CREDIT NOTES (CLEAN OUTPUT)
+    # ---------------------------------------------------------
         if st.button("💳 Push Credit Notes"):
             results = push_credit_notes(credit_df)
 
@@ -675,7 +675,7 @@ if pm_files:
                         for err in errors:
                             st.warning(f"- {err}")
                     else:
-                        st.warning("No detailed error returned from Cin7.")
+                        st.warning("No detailed error returned from Cin7.")    
     
     # ---------------------------------------------------------
     # STOCK ON HAND LOOKUP
