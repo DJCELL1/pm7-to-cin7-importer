@@ -57,6 +57,43 @@ def resolve_branch_from_sales_rep(rep_name: str) -> str:
         return "Avondale"
     return "Hamilton" if rep_name.strip().upper() == "CHARLOTTE MEYER" else "Avondale"
 
+# ---------------------------------------------------------
+# HELPER: Extract account number from ProMaster format
+# ---------------------------------------------------------
+def extract_account_number(raw_account):
+    """
+    Extract the actual account number from ProMaster's format.
+    ProMaster format: "Company Name - ACCOUNTCODE"
+    We need just: "ACCOUNTCODE"
+    """
+    if not raw_account or pd.isna(raw_account):
+        return ""
+    
+    acc = str(raw_account).strip()
+    
+    # Check if it contains a dash separator
+    if " - " in acc:
+        # Split and take the last part (account code)
+        parts = acc.split(" - ")
+        return parts[-1].strip()
+    
+    # No dash, return as-is
+    return acc
+
+def extract_company_name(raw_account):
+    """Extract company name from ProMaster format"""
+    if not raw_account or pd.isna(raw_account):
+        return ""
+    
+    acc = str(raw_account).strip()
+    
+    # Check if it contains a dash separator
+    if " - " in acc:
+        parts = acc.split(" - ")
+        return parts[0].strip()
+    
+    # No dash, return as-is
+    return acc
 
 # ---------------------------------------------------------
 # USERS (For Added By selector)
@@ -145,7 +182,6 @@ def get_supplier_details(name):
 # ---------------------------------------------------------
 # BOM LOOKUP
 # ---------------------------------------------------------
-
 def get_bom(code):
     # First: find BOM master ID
     search = cin7_get("v1/BomMasters", params={"where": f"code='{code}'"})
@@ -176,15 +212,32 @@ def get_bom(code):
     return out
 
 # ---------------------------------------------------------
-# CONTACT LOOKUP FOR SALES ORDERS
+# CONTACT LOOKUP FOR SALES ORDERS (UPDATED)
 # ---------------------------------------------------------
 def get_contact_data(account_number):
+    """Fetch contact data from Cin7 with proper error handling"""
     if not account_number or pd.isna(account_number):
-        return {"projectName": "", "salesPersonId": None, "memberId": None}
+        return {
+            "projectName": "",
+            "salesPersonId": None,
+            "memberId": None,
+            "company": ""
+        }
 
-    acc = str(account_number).strip()
+    # Extract just the account code (e.g., "BLACKIN5" from "Black Interiors - BLACKIN5")
+    raw_input = str(account_number).strip()
+    acc = extract_account_number(raw_input)
+    company_name = extract_company_name(raw_input)
 
-    # 1️⃣ Match by accountNumber (correct primary key)
+    if not acc:
+        return {
+            "projectName": "",
+            "salesPersonId": None,
+            "memberId": None,
+            "company": company_name
+        }
+
+    # Try accountNumber first (exact match)
     res = cin7_get(
         "v1/Contacts",
         params={"where": f"accountNumber='{acc}'"}
@@ -192,28 +245,74 @@ def get_contact_data(account_number):
 
     if res and len(res) > 0:
         c = res[0]
+        
+        # Extract and validate the ID
+        member_id = c.get("id")
+        sales_person_id = c.get("salesPersonId")
+        
+        # Convert to int if present and not zero
+        if member_id and member_id != 0:
+            member_id = int(member_id)
+        else:
+            member_id = None
+            
+        if sales_person_id and sales_person_id != 0:
+            sales_person_id = int(sales_person_id)
+        else:
+            sales_person_id = None
+        
+        # Use Cin7's company name, or fallback to ProMaster's
+        cin7_company = c.get("company", "") or company_name
+        
+        st.success(f"✅ Found contact: {cin7_company} (ID: {member_id})")
+        
         return {
-            # 👇 PROJECT NAME LIVES HERE
             "projectName": c.get("firstName", ""),
-            "salesPersonId": c.get("salesPersonId"),
-            "memberId": c.get("id")
+            "salesPersonId": sales_person_id,
+            "memberId": member_id,
+            "company": cin7_company
         }
 
-    # 2️⃣ Fallback: reference
-    res = cin7_get(
-        "v1/Contacts",
-        params={"where": f"reference='{acc}'"}
-    )
+    # Fallback: try searching by company name
+    if company_name:
+        res = cin7_get(
+            "v1/Contacts",
+            params={"where": f"company='{company_name}'"}
+        )
 
-    if res and len(res) > 0:
-        c = res[0]
-        return {
-            "projectName": c.get("firstName", ""),
-            "salesPersonId": c.get("salesPersonId"),
-            "memberId": c.get("id")
-        }
+        if res and len(res) > 0:
+            c = res[0]
+            
+            member_id = c.get("id")
+            sales_person_id = c.get("salesPersonId")
+            
+            if member_id and member_id != 0:
+                member_id = int(member_id)
+            else:
+                member_id = None
+                
+            if sales_person_id and sales_person_id != 0:
+                sales_person_id = int(sales_person_id)
+            else:
+                sales_person_id = None
+            
+            st.warning(f"⚠️ Found via company name: {company_name} (Account# {acc} not found)")
+            
+            return {
+                "projectName": c.get("firstName", ""),
+                "salesPersonId": sales_person_id,
+                "memberId": member_id,
+                "company": c.get("company", company_name)
+            }
 
-    return {"projectName": "", "salesPersonId": None, "memberId": None}
+    # No match found
+    st.error(f"❌ No contact found for: '{acc}' (Company: {company_name})")
+    return {
+        "projectName": "",
+        "salesPersonId": None,
+        "memberId": None,
+        "company": company_name
+    }
 
 # ---------------------------------------------------------
 # MEMBER RESOLUTION
@@ -231,43 +330,48 @@ def build_sales_payload(ref, grp):
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
     mem = grp["MemberId"].iloc[0]
 
-    sales_rep_id = grp["Sales Rep"].iloc[0] or added_by_id
+    # pick sales rep — if missing, use added_by_id
+    sales_rep_id = grp["Sales Rep"].iloc[0]
+    if not sales_rep_id:
+        sales_rep_id = added_by_id
 
-    return [
-        {   
-            "isApproved": False,
-            "stage": "New",
+    return [{
+        "isApproved": False,
+        "stage": "Draft",
 
-            "reference": ref,
-            "branchId": branch_id,
-            "enteredById": added_by_id,
-            "salesPersonId": sales_rep_id,
-            "memberId": resolve_member_id(mem, branch),
+        "reference": ref,
+        "branchId": branch_id,
 
-            "company": grp["Company"].iloc[0],
-            "projectName": grp["Project Name"].iloc[0],
-            "internalComments": grp["Internal Comments"].iloc[0],
-            "customerOrderNo": grp["Customer PO No"].iloc[0],
-            "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
+        # REAL creator of the SO
+        "enteredById": added_by_id,
 
-            "currencyCode": "NZD",
-            "taxStatus": "Excl",
-            "taxRate": 15.0,
-            "priceTier": "Trade (NZD - Excl)",
+        # Sales rep assignment (optional but useful)
+        "salesPersonId": sales_rep_id,
 
-            "lineItems": [
-                {
-                    "code": r["Item Code"],
-                    "qty": float(r["Item Qty"]),
-                    "unitPrice": float(r["Item Sell"]),   # PROJECT SELL PRICE
-                    "pricingMode": "Manual",               # 🔒 FORCE OVERRIDE
-                    "discount": 0
-                }
-                for _, r in grp.iterrows()
-            ]
-         }
-      ]
-         
+        "memberId": resolve_member_id(mem, branch),
+
+        "company": grp["Company"].iloc[0],
+        "projectName": grp["Project Name"].iloc[0],
+        "internalComments": grp["Internal Comments"].iloc[0],
+        "customerOrderNo": grp["Customer PO No"].iloc[0],
+        "estimatedDeliveryDate": f"{grp['ETD'].iloc[0]}T00:00:00Z",
+
+        "currencyCode": "NZD",
+        "taxStatus": "Excl",
+        "taxRate": 15.0,
+        "stage": "New",
+        "priceTier": "Trade (NZD - Excl)",
+
+        "lineItems": [
+            {
+                "code": r["Item Code"],
+                "qty": float(r["Item Qty"]),
+                "unitPrice": float(r["Item Price"]),  # ← Selling price
+                "unitCost": float(r["Item Cost"])      # ← Cost from supplier
+            }
+            for _, r in grp.iterrows()
+        ]
+    }]
 
 # ---------------------------------------------------------
 # CREDIT NOTE PAYLOAD
@@ -304,12 +408,12 @@ def build_credit_note_payload(ref, grp):
             {
                 "code": r["Item Code"],
                 "qty": float(r["Item Qty"]),
-                "unitPrice": float(r["Item Cost"])
+                "unitPrice": float(r["Item Price"]),  # ← Refund price
+                "unitCost": float(r["Item Cost"])      # ← Original cost
             }
             for _, r in grp.iterrows()
         ]
     }]
-
 
 # ---------------------------------------------------------
 # PO PAYLOAD
@@ -330,7 +434,7 @@ def build_po_payload(ref, grp):
     for _, r in grp.iterrows():
         parent_code = r["Item Code"]
         qty_ordered = float(r["Item Qty"])
-        price_parent = float(r["Item Cost"])
+        price_parent = float(r["Item Cost"])  # ← Use COST for Purchase Orders
 
         # -------------------------------------
         # Pull BOM from v2/BomMasters
@@ -384,6 +488,7 @@ def build_po_payload(ref, grp):
 
         "lineItems": line_items
     }]
+
 # ---------------------------------------------------------
 # PUSH SO
 # ---------------------------------------------------------
@@ -401,6 +506,7 @@ def push_sales_orders(df):
         except Exception as e:
             results.append({"Order Ref": ref, "Success": False, "Error": str(e)})
     return results
+
 # ---------------------------------------------------------
 # PUSH CREDIT NOTES
 # ---------------------------------------------------------
@@ -432,7 +538,6 @@ def push_credit_notes(df):
 
     return results
 
-
 # ---------------------------------------------------------
 # PUSH PO
 # ---------------------------------------------------------
@@ -455,6 +560,7 @@ def push_purchase_orders(df):
 # LOAD STATIC FILES
 # ---------------------------------------------------------
 products = pd.read_csv("Products.csv")
+
 # ---------------------------------------------------------
 # LOAD SUBSTITUTIONS FROM GOOGLE SHEETS (LIVE)
 # ---------------------------------------------------------
@@ -513,6 +619,7 @@ if pm_files:
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
 
         merged = pd.merge(pm, products, left_on="PartCode", right_on="Code", how="left")
+        
         # ---------------------------------------------------------
         # SAFETY CHECK: PRODUCT CODE NOT FOUND IN PRODUCTS.CSV
         # ---------------------------------------------------------
@@ -552,23 +659,43 @@ if pm_files:
                 st.write(still_missing)
                 st.stop()  # Hard stop so nobody pushes garbage
 
-
+        # ---------------------------------------------------------
+        # UPDATED: CONTACT LOOKUP WITH PROPER ACCOUNT EXTRACTION
+        # ---------------------------------------------------------
         accounts = merged["AccountNumber"].dropna().unique()
         proj_map = {}
         rep_map = {}
         mem_map = {}
+        company_map = {}
+
+        st.subheader("🔍 Looking up contacts in Cin7...")
 
         for acc in accounts:
             d = get_contact_data(acc)
             proj_map[acc] = d["projectName"]
             rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
             mem_map[acc] = d["memberId"]
+            company_map[acc] = d["company"]  # Use Cin7's company name
 
+        # Apply mappings
         merged["Project Name"] = merged["AccountNumber"].map(proj_map)
         merged["Sales Rep"] = merged["AccountNumber"].map(rep_map)
         merged["MemberId"] = merged["AccountNumber"].map(mem_map)
-        merged["Company"] = merged["AccountNumber"]
+        merged["Company"] = merged["AccountNumber"].map(company_map)  # Use mapped company
+
+        # Fill in defaults for missing companies
+        merged["Company"] = merged["Company"].fillna(merged["AccountNumber"])
         merged["Supplier"] = merged["Supplier"].fillna("").astype(str)
+
+        # Show summary
+        missing_members = merged[merged["MemberId"].isna()]["AccountNumber"].unique()
+        if len(missing_members) > 0:
+            st.warning(f"⚠️ {len(missing_members)} account(s) have no Member ID:")
+            for acc in missing_members:
+                st.write(f"  - {acc}")
+            st.info("💡 These will use the default member ID for their branch")
+        else:
+            st.success(f"✅ All {len(accounts)} accounts found in Cin7!")
 
         for _, r in merged.iterrows():
             supplier = r["Supplier"]
@@ -579,28 +706,26 @@ if pm_files:
 
             branch = resolve_branch_from_sales_rep(r["Sales Rep"])
             buffer.append({
-            "Branch": branch,
-            "Company": r["Company"],
-            "Project Name": r["Project Name"],
-            "Sales Rep": r["Sales Rep"],
-            "MemberId": r["MemberId"],
-            "Internal Comments": comment,
-            "Customer PO No": po_no,
-            "Supplier": supplier,
-            "ETD": etd.strftime("%Y-%m-%d"),
+                "Branch": branch,
+                "Company": r["Company"],
+                "Project Name": r["Project Name"],
+                "Sales Rep": r["Sales Rep"],
+                "MemberId": r["MemberId"],
+                "Internal Comments": comment,
+                "Customer PO No": po_no,
+                "Supplier": supplier,
+                "ETD": etd.strftime("%Y-%m-%d"),
 
-            "SO_OrderRef": SO_ref,
-            "PO_OrderRef": PO_ref,
+                "SO_OrderRef": SO_ref,
+                "PO_OrderRef": PO_ref,
 
-            "Item Code": r["PartCode"],
-            "Item Name": r.get("Product Name", ""),
-            "Item Qty": r.get("ProductQuantity", 0),
-            "Item Cost": r.get("ProductCost", 0),
-            "Item Sell": r.get("ProductPrice", 0), 
-            "OrderFlag": True
-        })
-
-
+                "Item Code": r["PartCode"],
+                "Item Name": r.get("Product Name", ""),
+                "Item Qty": r.get("ProductQuantity", 0),
+                "Item Cost": r.get("ProductCost", 0),      # ← COST (for PO)
+                "Item Price": r.get("ProductPrice", 0),     # ← PRICE (for SO)
+                "OrderFlag": True
+            })
 
     df = pd.DataFrame(buffer)
 
@@ -611,7 +736,6 @@ if pm_files:
         return float(r["Item Qty"]) < 0 or float(r["Item Cost"]) < 0
 
     df["IsCredit"] = df.apply(is_credit_row, axis=1)
-
 
     # ---------------------------------------------------------
     # SALES ORDERS TABLE
@@ -626,7 +750,7 @@ if pm_files:
     so_cols = [
         "Order Ref", "Company", "Branch", "Sales Rep",
         "Project Name", "MemberId",
-        "Item Code", "Item Name", "Item Qty", "Item Cost",
+        "Item Code", "Item Name", "Item Qty", "Item Cost", "Item Price",
         "Internal Comments", "Customer PO No", "ETD"
     ]
 
@@ -647,14 +771,14 @@ if pm_files:
         credit_cols = [
             "Order Ref", "Company", "Branch",
             "Project Name", "Item Code", "Item Name",
-            "Item Qty", "Item Cost", "Internal Comments"
+            "Item Qty", "Item Cost", "Item Price", "Internal Comments"
         ]
 
         st.dataframe(credit_df[credit_cols])
 
-    # ---------------------------------------------------------
-    # PUSH CREDIT NOTES (CLEAN OUTPUT)
-    # ---------------------------------------------------------
+        # ---------------------------------------------------------
+        # PUSH CREDIT NOTES (CLEAN OUTPUT)
+        # ---------------------------------------------------------
         if st.button("💳 Push Credit Notes"):
             results = push_credit_notes(credit_df)
 
@@ -713,7 +837,6 @@ if pm_files:
                 out["Hamilton"] = qty
 
         return out
-  
 
     # ---------------------------------------------------------
     # PURCHASE ORDERS TABLE (NO SOH LOOKUP)
@@ -785,4 +908,3 @@ if pm_files:
                 st.success(f"{order_ref} — Successfully created in Cin7")
             else:
                 st.error(f"{order_ref} — Failed: {r.get('Error') or r.get('Response')}")
-

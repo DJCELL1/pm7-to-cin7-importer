@@ -560,7 +560,32 @@ if pm_files:
         proj_map = {}
         rep_map = {}
         mem_map = {}
+ 
+        st.subheader("🔍 Diagnostic: Account Number Lookups")
 
+        for acc in accounts:
+            d = get_contact_data(acc)
+            proj_map[acc] = d["projectName"]
+            rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
+            mem_map[acc] = d["memberId"]
+    
+            # Diagnostic output
+            with st.expander(f"Account: {acc}"):
+                st.write("**Raw API Response:**")
+                st.json(d)
+                st.write("**Mapped Values:**")
+                st.write(f"- Project Name: `{proj_map[acc]}`")
+                st.write(f"- Sales Rep: `{rep_map[acc]}`")
+                st.write(f"- Member ID: `{mem_map[acc]}`")
+        
+                if mem_map[acc] is None:
+                    st.error("❌ Member ID is None! This contact was not found in Cin7.")
+                    st.write("**Possible causes:**")
+                    st.write("1. Account number doesn't exist in Cin7 Contacts")
+                    st.write("2. Account number has different formatting (spaces, special chars)")
+                    st.write("3. Contact type is wrong (should be 'Customer' for SO, 'Supplier' for PO)")
+                else:
+                    st.success(f"✅ Member ID found: {mem_map[acc]}")
         for acc in accounts:
             d = get_contact_data(acc)
             proj_map[acc] = d["projectName"]
