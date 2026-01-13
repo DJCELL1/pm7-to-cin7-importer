@@ -738,7 +738,7 @@ if pm_files:
 
     if invalid_skus:
         st.error(f"🚨 **CRITICAL: {len(invalid_skus)} Invalid SKUs Found**")
-        st.dataframe(pd.DataFrame(invalid_skus), use_container_width=True)
+        st.dataframe(pd.DataFrame(invalid_skus), width="stretch")
         st.warning("⚠️ Fix these SKUs before pushing to Cin7.")
 
     df = pd.DataFrame(buffer)
@@ -772,9 +772,9 @@ if pm_files:
         return [""] * len(row)
 
     styled_so = so_df[so_cols].style.apply(highlight_invalid_sku, axis=1)
-    st.dataframe(styled_so, use_container_width=True)
+    st.dataframe(styled_so, width="stretch")
 
-    so_edit = st.data_editor(so_df[so_cols], num_rows="dynamic", use_container_width=True)
+    so_edit = st.data_editor(so_df[so_cols], num_rows="dynamic", width="stretch")
 
     invalid_count = (~so_edit["SKU_Valid"]).sum()
     if invalid_count > 0:
@@ -802,7 +802,7 @@ if pm_files:
             "Item Qty", "Item Cost", "Item Price", "Internal Comments", "SKU_Valid"
         ]
 
-        st.dataframe(credit_df[credit_cols], use_container_width=True)
+        st.dataframe(credit_df[credit_cols], width="stretch")
 
         credit_invalid_count = (~credit_df["SKU_Valid"]).sum()
         if credit_invalid_count > 0:
