@@ -689,6 +689,16 @@ if pm_files:
                 choice = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"{fname}-{orig}")
                 if choice == "Swap":
                     pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
+    
+            # RE-VALIDATE SKUs after substitutions
+            pm["SKU_Valid"] = pm["PartCode"].apply(lambda x: (x in valid_skus) if x else False)
+    
+            # Show updated validation status
+            remaining_invalid = pm[~pm["SKU_Valid"] & (pm["PartCode"] != "")]
+            if remaining_invalid.empty:
+                st.success("✅ All SKUs are now valid after substitutions!")
+            else:
+                st.warning(f"⚠️ {len(remaining_invalid)} invalid SKUs still remain after substitutions")
 
         accounts = pm["AccountNumber"].dropna().unique() if "AccountNumber" in pm.columns else []
         proj_map, rep_map, mem_map, company_map = {}, {}, {}, {}
