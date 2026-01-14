@@ -457,6 +457,8 @@ def get_supplier_details(name):
 # =========================================================
 # CONTACT LOOKUP
 # =========================================================
+# Replace the get_contact_data function with this updated version:
+
 def get_contact_data(account_number):
     if not account_number or pd.isna(account_number):
         return {"projectName": "", "salesPersonId": None, "memberId": None, "company": ""}
@@ -478,9 +480,13 @@ def get_contact_data(account_number):
         sales_person_id = int(sales_person_id) if sales_person_id and sales_person_id != 0 else None
 
         cin7_company = c.get("company", "") or company_name
+        
+        # Get firstName for project name - try multiple possible field names
+        project_name = (c.get("firstName") or c.get("FirstName") or 
+                       c.get("firstname") or "").strip()
 
         return {
-            "projectName": c.get("firstName", ""),
+            "projectName": project_name,
             "salesPersonId": sales_person_id,
             "memberId": member_id,
             "company": cin7_company
@@ -496,15 +502,18 @@ def get_contact_data(account_number):
             member_id = int(member_id) if member_id and member_id != 0 else None
             sales_person_id = int(sales_person_id) if sales_person_id and sales_person_id != 0 else None
 
+            # Get firstName for project name - try multiple possible field names
+            project_name = (c.get("firstName") or c.get("FirstName") or 
+                           c.get("firstname") or "").strip()
+
             return {
-                "projectName": c.get("firstName", ""),
+                "projectName": project_name,
                 "salesPersonId": sales_person_id,
                 "memberId": member_id,
                 "company": c.get("company", company_name)
             }
 
     return {"projectName": "", "salesPersonId": None, "memberId": None, "company": company_name}
-
 # =========================================================
 # MEMBER RESOLUTION
 # =========================================================
