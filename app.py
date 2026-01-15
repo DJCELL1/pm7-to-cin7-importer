@@ -13,7 +13,7 @@ from psycopg2.extras import RealDictCursor
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(page_title="ProMaster → Cin7 Importer v51", layout="wide")
-st.title("🧱 ProMaster → Cin7 Importer v51 — Railway SKU Validation")
+st.title("🧱 ProMaster → Cin7 Importer v51 — Railway SKU Validation + Manual Override")
 
 # =========================================================
 # CONSTANTS
@@ -21,7 +21,7 @@ st.title("🧱 ProMaster → Cin7 Importer v51 — Railway SKU Validation")
 SUBS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTQts9hk9AShPbwgyJSDLgKiT9ql0Lndql3FRpUS528pYOxlPQM7HZsJD10mvul-aXi1T86BECEbY3Z/pub?output=csv"
 
 # =========================================================
-# SESSION STATE FOR MANUAL OVERRIDES
+# SESSION STATE
 # =========================================================
 if "manual_overrides" not in st.session_state:
     st.session_state.manual_overrides = set()
@@ -45,36 +45,37 @@ def clean_supplier_name(name: str):
     return re.sub(r"[^A-Z0-9]", "", x)
 
 def resolve_branch_from_sales_rep(rep_name) -> str:
-    """
-    Resolve branch from sales rep name.
-    Handles NaN, None, empty strings, and actual string values.
-    """
     if pd.isna(rep_name) or not rep_name:
         return "Avondale"
-    
     rep_name_str = str(rep_name).strip().upper()
-    
     return "Hamilton" if rep_name_str == "CHARLOTTE MEYER" else "Avondale"
 
 def extract_account_number(raw_account):
-    """ProMaster format: Company Name - ACCOUNTCODE Return: ACCOUNTCODE"""
     if not raw_account or pd.isna(raw_account):
         return ""
     acc = str(raw_account).strip()
     if " - " in acc:
-        parts = acc.split(" - ")
-        return parts[-1].strip()
+        return acc.split(" - ")[-1].strip()
     return acc
 
 def extract_company_name(raw_account):
-    """Extract company name from ProMaster format"""
     if not raw_account or pd.isna(raw_account):
         return ""
     acc = str(raw_account).strip()
     if " - " in acc:
-        parts = acc.split(" - ")
-        return parts[0].strip()
+        return acc.split(" - ")[0].strip()
     return acc
+
+def is_sku_valid(sku: str, valid_skus: set) -> bool:
+    sku = clean_code(sku)
+    return bool(sku) and (sku in valid_skus or sku in st.session_state.manual_overrides)
+
+def safe_get(pm: pd.DataFrame, *candidates, default=None):
+    """Return first existing column name value from a row/df usage, else default."""
+    for c in candidates:
+        if c in pm.columns:
+            return c
+    return default
 
 # =========================================================
 # CIN7 SECRETS
@@ -101,31 +102,16 @@ def cin7_get(endpoint, params=None):
     return None
 
 # =========================================================
-# RAILWAY DB CONNECTION (Cloud-safe)
+# RAILWAY DB CONNECTION
 # =========================================================
 def _build_pg_connect_kwargs():
-    """
-    Supports either:
-      [railway_db]
-      url = "postgresql://..."
-    OR:
-      [railway_db]
-      host="..."
-      port=...
-      database="..."
-      user="..."
-      password="..."
-      sslmode="require"
-    """
     db = st.secrets.get("railway_db")
     if not db:
-        return None, 'st.secrets missing section [railway_db]'
+        return None, "st.secrets missing section [railway_db]"
 
-    # URL style
     if "url" in db and db["url"]:
         return {"dsn": db["url"]}, None
 
-    # Field style
     required = ["host", "port", "database", "user", "password"]
     missing = [k for k in required if k not in db]
     if missing:
@@ -144,41 +130,30 @@ def _build_pg_connect_kwargs():
 
 @st.cache_resource
 def get_db_connection_cached():
-    """
-    Cached connection handle. We still validate it before use.
-    """
     kwargs, err = _build_pg_connect_kwargs()
     if err:
         return {"conn": None, "err": err}
-
     try:
         if "dsn" in kwargs:
             conn = psycopg2.connect(kwargs["dsn"], sslmode="require", connect_timeout=10)
         else:
             conn = psycopg2.connect(**kwargs)
-
         conn.autocommit = False
         return {"conn": conn, "err": None}
     except Exception as e:
         return {"conn": None, "err": f"{type(e).__name__}: {e}"}
 
 def get_db_connection():
-    """
-    Validates cached connection; if dead, clears cache and reconnects once.
-    """
     pack = get_db_connection_cached()
     conn = pack.get("conn")
-
     if conn is None:
         return None, pack.get("err") or "Unknown DB error"
 
-    # Validate connection still alive
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
         return conn, None
     except Exception:
-        # stale/broken cached connection: clear and try again
         get_db_connection_cached.clear()
         pack = get_db_connection_cached()
         conn = pack.get("conn")
@@ -191,9 +166,6 @@ def get_db_connection():
         except Exception as e:
             return None, f"{type(e).__name__}: {e}"
 
-# =========================================================
-# RAILWAY SKU LOOKUPS
-# =========================================================
 @st.cache_data(ttl=300)
 def get_all_valid_skus():
     conn, err = get_db_connection()
@@ -207,30 +179,8 @@ def get_all_valid_skus():
     except Exception as e:
         return set(), f"{type(e).__name__}: {e}"
 
-def validate_sku(sku_code):
-    conn, err = get_db_connection()
-    if not conn:
-        return {"exists": False, "name": "", "stock": 0, "error": err or "No DB connection"}
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT sku, name, stock_on_hand FROM products WHERE sku = %s",
-                (sku_code,)
-            )
-            result = cur.fetchone()
-            if result:
-                return {"exists": True, "name": result.get("name", ""), "stock": result.get("stock_on_hand", 0)}
-            return {"exists": False, "name": "", "stock": 0}
-    except Exception as e:
-        return {"exists": False, "name": "", "stock": 0, "error": f"{type(e).__name__}: {e}"}
-
-def is_sku_valid(sku, valid_skus):
-    """Check if SKU is valid (either in database or manually overridden)"""
-    return sku in valid_skus or sku in st.session_state.manual_overrides
-
 # =========================================================
-# USERS (Added By selector)
+# USERS MAP
 # =========================================================
 @st.cache_data(ttl=600)
 def get_users_map():
@@ -249,65 +199,53 @@ users_map = get_users_map()
 user_options = {v: k for k, v in users_map.items()}
 
 st.sidebar.header("👤 Added By (Cin7 Staff)")
-added_by_name = st.sidebar.selectbox(
-    "Select user:",
-    list(user_options.keys()) if user_options else ["No users found"]
-)
+added_by_name = st.sidebar.selectbox("Select user:", list(user_options.keys()) if user_options else ["No users found"])
 added_by_id = user_options.get(added_by_name, None)
 st.sidebar.caption(f"Using Staff ID: {added_by_id}")
 
 # =========================================================
-# MANUAL SKU OVERRIDE SECTION
+# MANUAL SKU OVERRIDES
 # =========================================================
 st.sidebar.header("🔧 Manual SKU Override")
-st.sidebar.caption("Add SKUs that exist in Cin7 but not yet synced to database")
+st.sidebar.caption("Use if SKU exists in Cin7 but Railway sync is lagging.")
 
 with st.sidebar.expander("Override SKUs", expanded=False):
-    override_input = st.text_input(
-        "Enter SKU to override:",
-        key="override_input",
-        help="Enter a SKU that exists in Cin7 but hasn't synced to the database yet"
-    )
-    
-    col1, col2 = st.columns(2)
-    with col1:
+    override_input = st.text_input("Enter SKU to override:", key="override_input")
+    c1, c2 = st.columns(2)
+    with c1:
         if st.button("➕ Add Override", key="add_override"):
-            if override_input:
-                cleaned_sku = clean_code(override_input)
-                if cleaned_sku:
-                    st.session_state.manual_overrides.add(cleaned_sku)
-                    st.success(f"✅ Added: {cleaned_sku}")
-                    st.rerun()
-    
-    with col2:
+            sku = clean_code(override_input)
+            if sku:
+                st.session_state.manual_overrides.add(sku)
+                st.success(f"✅ Added: {sku}")
+                st.rerun()
+    with c2:
         if st.button("🗑️ Clear All", key="clear_overrides"):
             st.session_state.manual_overrides.clear()
             st.success("Cleared all overrides")
             st.rerun()
-    
+
     if st.session_state.manual_overrides:
         st.caption(f"**Active Overrides ({len(st.session_state.manual_overrides)}):**")
         for sku in sorted(st.session_state.manual_overrides):
-            col_a, col_b = st.columns([3, 1])
-            with col_a:
+            a, b = st.columns([3, 1])
+            with a:
                 st.caption(f"✓ {sku}")
-            with col_b:
+            with b:
                 if st.button("❌", key=f"remove_{sku}"):
                     st.session_state.manual_overrides.discard(sku)
                     st.rerun()
 
 # =========================================================
-# DB STATUS + RECONNECT
+# DB STATUS
 # =========================================================
 st.sidebar.header("🗄️ Railway Database")
-
 colA, colB = st.sidebar.columns(2)
 with colA:
     if st.button("Reconnect DB"):
         get_db_connection_cached.clear()
         get_all_valid_skus.clear()
         st.rerun()
-
 with colB:
     if st.button("Refresh SKUs"):
         get_all_valid_skus.clear()
@@ -326,190 +264,22 @@ else:
     st.sidebar.error(f"❌ Not Connected: {db_err}")
 
 # =========================================================
-# SYNC NEW PRODUCTS FROM CIN7 -> RAILWAY
+# SUBSTITUTIONS
 # =========================================================
-def get_existing_skus_from_railway():
-    conn, err = get_db_connection()
-    if not conn:
-        st.error(f"❌ DB error: {err}")
-        return set()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT sku FROM products")
-            return {str(row[0]).strip().upper() for row in cur.fetchall() if row and row[0]}
-    except Exception as e:
-        st.error(f"Error getting existing SKUs: {type(e).__name__}: {e}")
-        return set()
+@st.cache_data(ttl=120)
+def load_substitutions():
+    df = pd.read_csv(SUBS_URL)
+    df["Code"] = df["Code"].apply(clean_code)
+    df["Substitute"] = df["Substitute"].apply(clean_code)
+    return df
 
-def get_last_sync_time():
-    conn, err = get_db_connection()
-    if not conn:
-        return None
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT last_checked FROM sync_watermark WHERE id = 1")
-            result = cur.fetchone()
-            return result[0] if result else None
-    except Exception:
-        return None
+subs = load_substitutions()
 
-def sync_new_products_from_cin7():
-    st.info("🔍 Fetching recent products from Cin7...")
-
-    params = {"page": 1, "rows": 250}
-    new_products = cin7_get("v1/Products", params=params)
-
-    if not new_products:
-        st.warning("⚠️ No products returned from Cin7")
-        return {"new": 0, "updated": 0}
-
-    existing_skus = get_existing_skus_from_railway()
-    conn, err = get_db_connection()
-    if not conn:
-        st.error(f"❌ Cannot connect to database: {err}")
-        return {"new": 0, "updated": 0}
-
-    inserted_count = 0
-    updated_count = 0
-
-    try:
-        with conn.cursor() as cur:
-            for product in new_products:
-                cin7_id = str(product.get("id", "")).strip()
-                sku = clean_code(str(product.get("code", "")).strip().upper())
-                if not sku:
-                    continue
-
-                name = str(product.get("name", "") or "")
-                description = str(product.get("description", "") or "")
-                try:
-                    price = float(product.get("price", 0) or 0)
-                except Exception:
-                    price = 0.0
-                try:
-                    stock = int(product.get("stockOnHand", 0) or 0)
-                except Exception:
-                    stock = 0
-                category = str(product.get("category", "") or "")
-
-                is_new = sku not in existing_skus
-
-                cur.execute("""
-                    INSERT INTO products (cin7_id, sku, name, description, price, stock_on_hand, category, last_modified)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (sku) DO UPDATE SET
-                        cin7_id = EXCLUDED.cin7_id,
-                        name = EXCLUDED.name,
-                        description = EXCLUDED.description,
-                        price = EXCLUDED.price,
-                        stock_on_hand = EXCLUDED.stock_on_hand,
-                        category = EXCLUDED.category,
-                        last_modified = NOW()
-                """, (cin7_id, sku, name, description, price, stock, category))
-
-                if is_new:
-                    inserted_count += 1
-                else:
-                    updated_count += 1
-
-        conn.commit()
-
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO sync_watermark (id, last_checked, updated_at)
-                VALUES (1, NOW(), NOW())
-                ON CONFLICT (id) DO UPDATE SET
-                    last_checked = NOW(),
-                    updated_at = NOW()
-            """)
-        conn.commit()
-
-        # clear sku cache
-        get_all_valid_skus.clear()
-
-        return {"new": inserted_count, "updated": updated_count}
-
-    except Exception as e:
-        conn.rollback()
-        st.error(f"❌ Sync failed: {type(e).__name__}: {e}")
-        return {"new": 0, "updated": 0}
-
-st.sidebar.header("🔄 Sync Products")
-last_sync = get_last_sync_time()
-if last_sync:
-    st.sidebar.caption(f"Last sync: {last_sync.strftime('%Y-%m-%d %H:%M')}")
-
-if st.sidebar.button("Sync New Products from Cin7"):
-    with st.spinner("Syncing..."):
-        result = sync_new_products_from_cin7()
-        if result["new"] or result["updated"]:
-            bits = []
-            if result["new"]:
-                bits.append(f"✅ {result['new']} new")
-            if result["updated"]:
-                bits.append(f"🔄 {result['updated']} updated")
-            st.sidebar.success(" | ".join(bits))
-            st.rerun()
-        else:
-            st.sidebar.info("No changes detected")
-
-# =========================================================
-# SUPPLIERS
-# =========================================================
-@st.cache_data(ttl=3600)
-def load_all_suppliers():
-    res = cin7_get("v1/Contacts")
-    if not res:
-        return pd.DataFrame(columns=["id", "company", "company_clean"])
-
-    suppliers = []
-    for contact in res:
-        contact_type = (
-            contact.get("type") or contact.get("Type") or
-            contact.get("contactType") or contact.get("ContactType") or ""
-        )
-        if str(contact_type).strip().lower() == "supplier":
-            suppliers.append(contact)
-
-    if not suppliers:
-        return pd.DataFrame(columns=["id", "company", "company_clean"])
-
-    df = pd.DataFrame(suppliers)
-
-    company_field = "company" if "company" in df.columns else "Company"
-    id_field = "id" if "id" in df.columns else "Id"
-
-    df["company_clean"] = df[company_field].apply(clean_supplier_name)
-    return df[[id_field, company_field, "company_clean"]].rename(
-        columns={id_field: "id", company_field: "company"}
-    )
-
-suppliers_df = load_all_suppliers()
-
-def get_supplier_details(name):
-    if not name or pd.isna(name):
-        return {"id": None, "abbr": ""}
-
-    cleaned = clean_supplier_name(name)
-    best_id = None
-    best_score = 0
-    best_name = ""
-
-    for _, row in suppliers_df.iterrows():
-        comp = str(row["company_clean"])
-        score = SequenceMatcher(None, cleaned, comp).ratio()
-        if score > best_score:
-            best_score = score
-            best_id = row["id"]
-            best_name = row["company"]
-
-    if best_id and best_score >= 0.40:
-        return {"id": int(best_id), "abbr": cleaned[:4] or "SUPP"}
-
-    raise Exception(
-        f"Supplier match failed for '{name}'. "
-        f"Closest Cin7 supplier: '{best_name}' (score={best_score:.2f})"
-    )
+st.sidebar.header("♻️ Substitutions")
+if st.sidebar.button("Refresh Substitutions"):
+    load_substitutions.clear()
+    subs = load_substitutions()
+    st.sidebar.success("✔ Substitutions refreshed")
 
 # =========================================================
 # CONTACT LOOKUP
@@ -530,20 +300,14 @@ def get_contact_data(account_number):
         c = res[0]
         member_id = c.get("id") or None
         sales_person_id = c.get("salesPersonId") or None
-
         member_id = int(member_id) if member_id and member_id != 0 else None
         sales_person_id = int(sales_person_id) if sales_person_id and sales_person_id != 0 else None
-
-        cin7_company = c.get("company", "") or company_name
-        
-        project_name = (c.get("firstName") or c.get("FirstName") or 
-                       c.get("firstname") or "").strip()
-
+        project_name = (c.get("firstName") or c.get("FirstName") or c.get("firstname") or "").strip()
         return {
             "projectName": project_name,
             "salesPersonId": sales_person_id,
             "memberId": member_id,
-            "company": cin7_company
+            "company": c.get("company", "") or company_name
         }
 
     if company_name:
@@ -552,13 +316,9 @@ def get_contact_data(account_number):
             c = res[0]
             member_id = c.get("id") or None
             sales_person_id = c.get("salesPersonId") or None
-
             member_id = int(member_id) if member_id and member_id != 0 else None
             sales_person_id = int(sales_person_id) if sales_person_id and sales_person_id != 0 else None
-
-            project_name = (c.get("firstName") or c.get("FirstName") or 
-                           c.get("firstname") or "").strip()
-
+            project_name = (c.get("firstName") or c.get("FirstName") or c.get("firstname") or "").strip()
             return {
                 "projectName": project_name,
                 "salesPersonId": sales_person_id,
@@ -582,11 +342,9 @@ def resolve_member_id(member_id, branch):
 def build_sales_payload(ref, grp):
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
-    mem = grp["MemberId"].iloc[0]
 
-    sales_rep_id = grp["Sales Rep"].iloc[0]
-    if not sales_rep_id:
-        sales_rep_id = added_by_id
+    mem = grp["MemberId"].iloc[0]
+    sales_rep_id = grp["Sales Rep"].iloc[0] or added_by_id
 
     return [{
         "isApproved": False,
@@ -619,6 +377,7 @@ def build_sales_payload(ref, grp):
 def build_credit_note_payload(ref, grp):
     branch = grp["Branch"].iloc[0]
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
+
     mem = grp["MemberId"].iloc[0]
     sales_rep_id = grp["Sales Rep"].iloc[0] or added_by_id
 
@@ -652,14 +411,11 @@ def push_sales_orders(df):
     url = f"{base_url}/v1/SalesOrders?loadboms=false"
     heads = {"Content-Type": "application/json"}
     results = []
-
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_sales_payload(ref, grp)
-            r = requests.post(
-                url, headers=heads, data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key), timeout=60
-            )
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                              auth=HTTPBasicAuth(api_username, api_key), timeout=60)
             results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
         except Exception as e:
             results.append({"Order Ref": ref, "Success": False, "Error": f"{type(e).__name__}: {e}"})
@@ -669,36 +425,15 @@ def push_credit_notes(df):
     url = f"{base_url}/v1/CreditNotes"
     heads = {"Content-Type": "application/json"}
     results = []
-
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_credit_note_payload(ref, grp)
-            r = requests.post(
-                url, headers=heads, data=json.dumps(payload),
-                auth=HTTPBasicAuth(api_username, api_key), timeout=60
-            )
+            r = requests.post(url, headers=heads, data=json.dumps(payload),
+                              auth=HTTPBasicAuth(api_username, api_key), timeout=60)
             results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
         except Exception as e:
             results.append({"Order Ref": ref, "Success": False, "Error": f"{type(e).__name__}: {e}"})
     return results
-
-# =========================================================
-# SUBSTITUTIONS
-# =========================================================
-@st.cache_data(ttl=120)
-def load_substitutions():
-    df = pd.read_csv(SUBS_URL)
-    df["Code"] = df["Code"].apply(clean_code)
-    df["Substitute"] = df["Substitute"].apply(clean_code)
-    return df
-
-subs = load_substitutions()
-
-st.sidebar.header("♻️ Substitutions")
-if st.sidebar.button("Refresh Substitutions"):
-    load_substitutions.clear()
-    subs = load_substitutions()
-    st.sidebar.success("✔ Substitutions refreshed")
 
 # =========================================================
 # UI — UPLOAD
@@ -710,53 +445,240 @@ if pm_files:
     valid_skus, sku_err = get_all_valid_skus()
     if sku_err:
         st.warning(f"⚠️ SKU list not loaded from DB: {sku_err}")
+        valid_skus = set()
     else:
         st.caption(f"Loaded {len(valid_skus)} SKUs from Railway")
-    
+
     if st.session_state.manual_overrides:
         st.info(f"ℹ️ {len(st.session_state.manual_overrides)} manual override(s) active")
 
     buffer = []
     invalid_skus = []
 
+    # Resolve likely column names
+    # (prevents “nothing happens” when ProMaster exports change headers)
+    # Required:
+    #  - PartCode
+    #  - ProductQuantity / ProductCost / ProductPrice
+    partcode_col_guess = None
+
     for file in pm_files:
-        fname = file.name
+        try:
+            fname = file.name
+            name_no_ext = re.sub(r"\.csv$", "", fname, flags=re.I)
+            order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice$", "", name_no_ext, flags=re.I)
+            po_no = order_ref_base.split(".")[0]
 
-        name_no_ext = re.sub(r"\.csv$", "", fname, flags=re.I)
-        order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice$", "", name_no_ext, flags=re.I)
-        po_no = order_ref_base.split(".")[0]
+            st.subheader(f"📄 {fname}")
+            comment = st.text_input(f"Internal comment for {order_ref_base}", key=f"c-{order_ref_base}")
+            etd = st.date_input(f"ETD for {order_ref_base}", datetime.now() + timedelta(days=2))
 
-        st.subheader(f"📄 {fname}")
+            pm = pd.read_csv(file)
 
-        comment = st.text_input(f"Internal comment for {order_ref_base}", key=f"c-{order_ref_base}")
-        etd = st.date_input(f"ETD for {order_ref_base}", datetime.now() + timedelta(days=2))
+            # column detection
+            partcode_col_guess = safe_get(pm, "PartCode", "Part Code", "Part_Code", default=None)
+            if not partcode_col_guess:
+                st.error(f"❌ {fname}: Cannot find PartCode column. Found: {list(pm.columns)}")
+                st.stop()
 
-        pm = pd.read_csv(file)
-        pm["PartCode"] = pm["PartCode"].apply(clean_code)
+            qty_col = safe_get(pm, "ProductQuantity", "Qty", "Quantity", default=None)
+            cost_col = safe_get(pm, "ProductCost", "Cost", "UnitCost", default=None)
+            price_col = safe_get(pm, "ProductPrice", "Price", "UnitPrice", default=None)
+            acct_col = safe_get(pm, "AccountNumber", "Account Number", default=None)
+            name_col = safe_get(pm, "ProductName", "Product Name", "Name", default=None)
 
-        # SKU VALIDATION (including manual overrides)
-        pm["SKU_Valid"] = pm["PartCode"].apply(lambda x: is_sku_valid(x, valid_skus) if x else False)
-        invalid = pm[~pm["SKU_Valid"] & (pm["PartCode"] != "")]
+            pm[partcode_col_guess] = pm[partcode_col_guess].apply(clean_code)
+            pm["PartCode"] = pm[partcode_col_guess]  # normalize
 
-        if not invalid.empty:
-            st.error(f"⚠️ {len(invalid)} INVALID SKUs found in {fname}:")
-            
-            # Quick override option
-            with st.expander("🔧 Quick Override Options", expanded=True):
-                cols = st.columns(4)
-                for idx, (_, row) in enumerate(invalid.iterrows()):
-                    sku = row["PartCode"]
-                    col = cols[idx % 4]
-                    with col:
-                        if st.button(f"✓ Override {sku}", key=f"quick_override_{fname}_{sku}"):
-                            st.session_state.manual_overrides.add(sku)
-                            st.rerun()
-            
-            for _, row in invalid.iterrows():
-                sku = row["PartCode"]
-                is_overridden = sku in st.session_state.manual_overrides
-                if is_overridden:
-                    st.success(f"✅ **{sku}** - Manually overridden (will be accepted)")
+            # ------------------------------
+            # Substitutions FIRST
+            # ------------------------------
+            hits = pm[pm["PartCode"].isin(subs["Code"].values)]
+            if not hits.empty:
+                st.info("♻️ Substitutions Found:")
+                for _, row in hits.iterrows():
+                    orig = row["PartCode"]
+                    sub = subs.loc[subs["Code"] == orig, "Substitute"].iloc[0]
+                    choice = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"sub-{fname}-{orig}")
+                    if choice == "Swap":
+                        pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
+
+            # Validate after substitutions + overrides
+            pm["SKU_Valid"] = pm["PartCode"].apply(lambda x: is_sku_valid(x, valid_skus) if x else False)
+            invalid = pm[~pm["SKU_Valid"] & (pm["PartCode"] != "")]
+
+            if not invalid.empty:
+                st.error(f"⚠️ {invalid['PartCode'].nunique()} invalid SKU(s) in {fname}")
+
+                # Quick override buttons
+                with st.expander("🔧 Quick Override Options", expanded=True):
+                    bad_skus = sorted(set(invalid["PartCode"].astype(str).tolist()))
+                    cols = st.columns(4)
+                    for i, sku in enumerate(bad_skus):
+                        with cols[i % 4]:
+                            if st.button(f"✓ Override {sku}", key=f"quick_override_{fname}_{sku}"):
+                                st.session_state.manual_overrides.add(sku)
+                                st.rerun()
+
+                # Recompute validity after potential rerun (this run still shows warnings)
+                for sku in sorted(set(invalid["PartCode"].astype(str).tolist())):
+                    if sku in st.session_state.manual_overrides:
+                        st.success(f"✅ **{sku}** - Manually overridden")
+                    else:
+                        st.warning(f"❌ **{sku}** - Not in Railway (and not overridden)")
+                        invalid_skus.append({"File": fname, "SKU": sku})
+
+            # Contact mappings (optional)
+            proj_map, rep_map, mem_map, company_map = {}, {}, {}, {}
+            if acct_col:
+                accounts = pm[acct_col].dropna().unique()
+                for acc in accounts:
+                    d = get_contact_data(acc)
+                    proj_map[acc] = d["projectName"]
+                    rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
+                    mem_map[acc] = d["memberId"]
+                    company_map[acc] = d["company"]
+
+                pm["Project Name"] = pm[acct_col].map(proj_map)
+                pm["Sales Rep"] = pm[acct_col].map(rep_map)
+                pm["MemberId"] = pm[acct_col].map(mem_map)
+                pm["Company"] = pm[acct_col].map(company_map)
+                pm["Company"] = pm["Company"].fillna(pm[acct_col].apply(extract_company_name))
+            else:
+                pm["Project Name"] = ""
+                pm["Sales Rep"] = ""
+                pm["MemberId"] = None
+                pm["Company"] = ""
+
+            # Build buffer rows
+            for _, r in pm.iterrows():
+                so_ref = order_ref_base
+                branch = resolve_branch_from_sales_rep(r.get("Sales Rep"))
+
+                item_code = r.get("PartCode", "")
+                sku_ok = bool(r.get("SKU_Valid", False))
+
+                buffer.append({
+                    "Branch": branch,
+                    "Company": r.get("Company", ""),
+                    "Project Name": r.get("Project Name", ""),
+                    "Sales Rep": r.get("Sales Rep", ""),
+                    "MemberId": r.get("MemberId", None),
+                    "Internal Comments": comment,
+                    "Customer PO No": po_no,
+                    "ETD": etd.strftime("%Y-%m-%d"),
+                    "Order Ref": so_ref,
+                    "Item Code": item_code,
+                    "Item Name": r.get(name_col, "") if name_col else "",
+                    "Item Qty": r.get(qty_col, 0) if qty_col else 0,
+                    "Item Cost": r.get(cost_col, 0) if cost_col else 0,
+                    "Item Price": r.get(price_col, 0) if price_col else 0,
+                    "OrderFlag": True,
+                    "SKU_Valid": sku_ok,
+                    "SKU_Overridden": (item_code in st.session_state.manual_overrides),
+                })
+
+        except Exception as e:
+            st.error(f"💥 Crashed processing {file.name}")
+            st.exception(e)
+            st.stop()
+
+    # =========================================================
+    # Build output tables
+    # =========================================================
+    df = pd.DataFrame(buffer)
+    if df.empty:
+        st.error("No order lines were created. Your CSV headers probably don't match what the app expects.")
+        st.stop()
+
+    # Credit detection
+    def is_credit_row(r):
+        try:
+            return float(r["Item Qty"]) < 0 or float(r["Item Cost"]) < 0
+        except Exception:
+            return False
+
+    df["IsCredit"] = df.apply(is_credit_row, axis=1)
+
+    # Split
+    so_df = df[(df["OrderFlag"] == True) & (df["IsCredit"] == False)].copy()
+    credit_df = df[(df["OrderFlag"] == True) & (df["IsCredit"] == True)].copy()
+
+    # Columns
+    so_cols = [
+        "Order Ref", "Company", "Branch", "Sales Rep",
+        "Project Name", "MemberId",
+        "Item Code", "Item Name", "Item Qty", "Item Cost", "Item Price",
+        "Internal Comments", "Customer PO No", "ETD",
+        "SKU_Valid", "SKU_Overridden"
+    ]
+
+    missing_cols = [c for c in so_cols if c not in so_df.columns]
+    if missing_cols:
+        st.error("💥 Internal error: missing expected columns:")
+        st.write(missing_cols)
+        st.write("Have columns:", list(so_df.columns))
+        st.stop()
+
+    st.header("📄 Sales Orders")
+    st.subheader("📝 Sales Order Lines")
+
+    def highlight_row(row):
+        if (not row.get("SKU_Valid", True)) and (not row.get("SKU_Overridden", False)):
+            return ["background-color: #ffcccc"] * len(row)
+        if (not row.get("SKU_Valid", True)) and row.get("SKU_Overridden", False):
+            return ["background-color: #ffe0b2"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(so_df[so_cols].style.apply(highlight_row, axis=1), width="stretch")
+
+    so_edit = st.data_editor(so_df[so_cols], num_rows="dynamic", width="stretch")
+
+    blocking_mask = (~so_edit["SKU_Valid"]) & (~so_edit["SKU_Overridden"])
+    invalid_count = int(blocking_mask.sum())
+
+    if invalid_count > 0:
+        st.error(f"⚠️ Cannot push: {invalid_count} invalid SKUs present (not overridden).")
+
+    if st.button("🚀 Push Sales Orders", key="push_so", disabled=(invalid_count > 0)):
+        results = push_sales_orders(so_edit)
+        st.subheader("Results")
+        for r in results:
+            if r.get("Success"):
+                st.success(f"✅ {r.get('Order Ref')} pushed")
+            else:
+                st.error(f"❌ {r.get('Order Ref')} failed")
+                st.code(r.get("Response") or r.get("Error") or "Unknown error")
+
+    # CREDIT NOTES
+    if not credit_df.empty:
+        st.header("💳 Credit Notes")
+        credit_cols = [
+            "Order Ref", "Company", "Branch",
+            "Project Name", "Item Code", "Item Name",
+            "Item Qty", "Item Cost", "Item Price", "Internal Comments",
+            "SKU_Valid", "SKU_Overridden"
+        ]
+        missing_credit = [c for c in credit_cols if c not in credit_df.columns]
+        if missing_credit:
+            st.error("💥 Internal error: missing expected credit note columns:")
+            st.write(missing_credit)
+            st.stop()
+
+        st.dataframe(credit_df[credit_cols].style.apply(highlight_row, axis=1), width="stretch")
+
+        credit_blocking = (~credit_df["SKU_Valid"]) & (~credit_df["SKU_Overridden"])
+        credit_invalid_count = int(credit_blocking.sum())
+
+        if credit_invalid_count > 0:
+            st.error(f"⚠️ Cannot push: {credit_invalid_count} invalid SKUs in credit notes (not overridden).")
+
+        if st.button("💳 Push Credit Notes", disabled=(credit_invalid_count > 0)):
+            results = push_credit_notes(credit_df[credit_cols])
+            st.subheader("Credit Note Results")
+            for r in results:
+                if r.get("Success"):
+                    st.success(f"✅ Credit note {r.get('Order Ref')} pushed")
                 else:
-                    st.warning(f"❌ **{sku}** - Does not exist in database")
-                    invalid_skus.append({"File": fname, "SKU": sku, "Product": row.get("ProductName", row.get("Product Name", ""))})
+                    st.error(f"❌ Credit note {r.get('Order Ref')} failed")
+                    st.code(r.get("Response") or r.get("Error") or "Unknown error")
