@@ -733,7 +733,7 @@ if pm_files:
 
         for _, r in pm.iterrows():
             SO_ref = order_ref_base
-            branch = resolve_branch_from_sales_rep(r.get("Sales Rep", ""))
+            branch = resolve_branch_from_sales_rep(r.get("Sales Rep"))
 
             buffer.append({
                 "Branch": branch,
