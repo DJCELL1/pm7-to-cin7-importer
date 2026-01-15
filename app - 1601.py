@@ -21,12 +21,6 @@ st.title("🧱 ProMaster → Cin7 Importer v51 — Railway SKU Validation")
 SUBS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTQts9hk9AShPbwgyJSDLgKiT9ql0Lndql3FRpUS528pYOxlPQM7HZsJD10mvul-aXi1T86BECEbY3Z/pub?output=csv"
 
 # =========================================================
-# SESSION STATE FOR MANUAL OVERRIDES
-# =========================================================
-if "manual_overrides" not in st.session_state:
-    st.session_state.manual_overrides = set()
-
-# =========================================================
 # HELPERS
 # =========================================================
 def clean_code(x):
@@ -49,9 +43,11 @@ def resolve_branch_from_sales_rep(rep_name) -> str:
     Resolve branch from sales rep name.
     Handles NaN, None, empty strings, and actual string values.
     """
+    # Handle NaN (float), None, or empty string
     if pd.isna(rep_name) or not rep_name:
         return "Avondale"
     
+    # Convert to string and check (handles cases where rep_name might be numeric)
     rep_name_str = str(rep_name).strip().upper()
     
     return "Hamilton" if rep_name_str == "CHARLOTTE MEYER" else "Avondale"
@@ -137,7 +133,7 @@ def _build_pg_connect_kwargs():
         "dbname": db["database"],
         "user": db["user"],
         "password": db["password"],
-        "sslmode": db.get("sslmode", "require"),
+        "sslmode": db.get("sslmode", "require"),  # Railway usually needs SSL
         "connect_timeout": int(db.get("connect_timeout", 10)),
     }
     return kwargs, None
@@ -225,10 +221,6 @@ def validate_sku(sku_code):
     except Exception as e:
         return {"exists": False, "name": "", "stock": 0, "error": f"{type(e).__name__}: {e}"}
 
-def is_sku_valid(sku, valid_skus):
-    """Check if SKU is valid (either in database or manually overridden)"""
-    return sku in valid_skus or sku in st.session_state.manual_overrides
-
 # =========================================================
 # USERS (Added By selector)
 # =========================================================
@@ -255,46 +247,6 @@ added_by_name = st.sidebar.selectbox(
 )
 added_by_id = user_options.get(added_by_name, None)
 st.sidebar.caption(f"Using Staff ID: {added_by_id}")
-
-# =========================================================
-# MANUAL SKU OVERRIDE SECTION
-# =========================================================
-st.sidebar.header("🔧 Manual SKU Override")
-st.sidebar.caption("Add SKUs that exist in Cin7 but not yet synced to database")
-
-with st.sidebar.expander("Override SKUs", expanded=False):
-    override_input = st.text_input(
-        "Enter SKU to override:",
-        key="override_input",
-        help="Enter a SKU that exists in Cin7 but hasn't synced to the database yet"
-    )
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("➕ Add Override", key="add_override"):
-            if override_input:
-                cleaned_sku = clean_code(override_input)
-                if cleaned_sku:
-                    st.session_state.manual_overrides.add(cleaned_sku)
-                    st.success(f"✅ Added: {cleaned_sku}")
-                    st.rerun()
-    
-    with col2:
-        if st.button("🗑️ Clear All", key="clear_overrides"):
-            st.session_state.manual_overrides.clear()
-            st.success("Cleared all overrides")
-            st.rerun()
-    
-    if st.session_state.manual_overrides:
-        st.caption(f"**Active Overrides ({len(st.session_state.manual_overrides)}):**")
-        for sku in sorted(st.session_state.manual_overrides):
-            col_a, col_b = st.columns([3, 1])
-            with col_a:
-                st.caption(f"✓ {sku}")
-            with col_b:
-                if st.button("❌", key=f"remove_{sku}"):
-                    st.session_state.manual_overrides.discard(sku)
-                    st.rerun()
 
 # =========================================================
 # DB STATUS + RECONNECT
@@ -514,6 +466,8 @@ def get_supplier_details(name):
 # =========================================================
 # CONTACT LOOKUP
 # =========================================================
+# Replace the get_contact_data function with this updated version:
+
 def get_contact_data(account_number):
     if not account_number or pd.isna(account_number):
         return {"projectName": "", "salesPersonId": None, "memberId": None, "company": ""}
@@ -536,6 +490,7 @@ def get_contact_data(account_number):
 
         cin7_company = c.get("company", "") or company_name
         
+        # Get firstName for project name - try multiple possible field names
         project_name = (c.get("firstName") or c.get("FirstName") or 
                        c.get("firstname") or "").strip()
 
@@ -556,6 +511,7 @@ def get_contact_data(account_number):
             member_id = int(member_id) if member_id and member_id != 0 else None
             sales_person_id = int(sales_person_id) if sales_person_id and sales_person_id != 0 else None
 
+            # Get firstName for project name - try multiple possible field names
             project_name = (c.get("firstName") or c.get("FirstName") or 
                            c.get("firstname") or "").strip()
 
@@ -567,7 +523,6 @@ def get_contact_data(account_number):
             }
 
     return {"projectName": "", "salesPersonId": None, "memberId": None, "company": company_name}
-
 # =========================================================
 # MEMBER RESOLUTION
 # =========================================================
@@ -712,9 +667,6 @@ if pm_files:
         st.warning(f"⚠️ SKU list not loaded from DB: {sku_err}")
     else:
         st.caption(f"Loaded {len(valid_skus)} SKUs from Railway")
-    
-    if st.session_state.manual_overrides:
-        st.info(f"ℹ️ {len(st.session_state.manual_overrides)} manual override(s) active")
 
     buffer = []
     invalid_skus = []
@@ -734,29 +686,177 @@ if pm_files:
         pm = pd.read_csv(file)
         pm["PartCode"] = pm["PartCode"].apply(clean_code)
 
-        # SKU VALIDATION (including manual overrides)
-        pm["SKU_Valid"] = pm["PartCode"].apply(lambda x: is_sku_valid(x, valid_skus) if x else False)
+        # SKU VALIDATION
+        pm["SKU_Valid"] = pm["PartCode"].apply(lambda x: (x in valid_skus) if x else False)
         invalid = pm[~pm["SKU_Valid"] & (pm["PartCode"] != "")]
 
         if not invalid.empty:
             st.error(f"⚠️ {len(invalid)} INVALID SKUs found in {fname}:")
-            
-            # Quick override option
-            with st.expander("🔧 Quick Override Options", expanded=True):
-                cols = st.columns(4)
-                for idx, (_, row) in enumerate(invalid.iterrows()):
-                    sku = row["PartCode"]
-                    col = cols[idx % 4]
-                    with col:
-                        if st.button(f"✓ Override {sku}", key=f"quick_override_{fname}_{sku}"):
-                            st.session_state.manual_overrides.add(sku)
-                            st.rerun()
-            
             for _, row in invalid.iterrows():
                 sku = row["PartCode"]
-                is_overridden = sku in st.session_state.manual_overrides
-                if is_overridden:
-                    st.success(f"✅ **{sku}** - Manually overridden (will be accepted)")
+                st.warning(f"❌ **{sku}** - Does not exist in database")
+                invalid_skus.append({"File": fname, "SKU": sku, "Product": row.get("ProductName", row.get("Product Name", ""))})
+
+        # substitutions
+        hits = pm[pm["PartCode"].isin(subs["Code"].values)]
+        if not hits.empty:
+            st.info("♻️ Substitutions Found:")
+            for _, row in hits.iterrows():
+                orig = row["PartCode"]
+                sub = subs.loc[subs["Code"] == orig, "Substitute"].iloc[0]
+                choice = st.radio(f"{orig} → {sub}", ["Keep", "Swap"], key=f"{fname}-{orig}")
+                if choice == "Swap":
+                    pm.loc[pm["PartCode"] == orig, "PartCode"] = sub
+    
+            # RE-VALIDATE SKUs after substitutions
+            pm["SKU_Valid"] = pm["PartCode"].apply(lambda x: (x in valid_skus) if x else False)
+    
+            # Show updated validation status
+            remaining_invalid = pm[~pm["SKU_Valid"] & (pm["PartCode"] != "")]
+            if remaining_invalid.empty:
+                st.success("✅ All SKUs are now valid after substitutions!")
+            else:
+                st.warning(f"⚠️ {len(remaining_invalid)} invalid SKUs still remain after substitutions")
+
+        accounts = pm["AccountNumber"].dropna().unique() if "AccountNumber" in pm.columns else []
+        proj_map, rep_map, mem_map, company_map = {}, {}, {}, {}
+
+        for acc in accounts:
+            d = get_contact_data(acc)
+            proj_map[acc] = d["projectName"]
+            rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
+            mem_map[acc] = d["memberId"]
+            company_map[acc] = d["company"]
+
+        if "AccountNumber" in pm.columns:
+            pm["Project Name"] = pm["AccountNumber"].map(proj_map)
+            pm["Sales Rep"] = pm["AccountNumber"].map(rep_map)
+            pm["MemberId"] = pm["AccountNumber"].map(mem_map)
+            pm["Company"] = pm["AccountNumber"].map(company_map)
+            pm["Company"] = pm["Company"].fillna(pm["AccountNumber"])
+        else:
+            pm["Project Name"] = ""
+            pm["Sales Rep"] = ""
+            pm["MemberId"] = None
+            pm["Company"] = ""
+
+        for _, r in pm.iterrows():
+            SO_ref = order_ref_base
+            branch = resolve_branch_from_sales_rep(r.get("Sales Rep"))
+
+            buffer.append({
+                "Branch": branch,
+                "Company": r.get("Company", ""),
+                "Project Name": r.get("Project Name", ""),
+                "Sales Rep": r.get("Sales Rep", ""),
+                "MemberId": r.get("MemberId", None),
+                "Internal Comments": comment,
+                "Customer PO No": po_no,
+                "ETD": etd.strftime("%Y-%m-%d"),
+                "SO_OrderRef": SO_ref,
+                "Order Ref": SO_ref,
+                "Item Code": r.get("PartCode", ""),
+                "Item Name": r.get("ProductName", r.get("Product Name", "")),
+                "Item Qty": r.get("ProductQuantity", 0),
+                "Item Cost": r.get("ProductCost", 0),
+                "Item Price": r.get("ProductPrice", 0),
+                "OrderFlag": True,
+                "SKU_Valid": r.get("SKU_Valid", False)
+            })
+
+    if invalid_skus:
+        st.error(f"🚨 **CRITICAL: {len(invalid_skus)} Invalid SKUs Found**")
+        st.dataframe(pd.DataFrame(invalid_skus), width="stretch")
+        st.warning("⚠️ Fix these SKUs before pushing to Cin7.")
+
+    df = pd.DataFrame(buffer)
+
+    # CREDIT NOTE DETECTION
+    def is_credit_row(r):
+        try:
+            return float(r["Item Qty"]) < 0 or float(r["Item Cost"]) < 0
+        except Exception:
+            return False
+
+    df["IsCredit"] = df.apply(is_credit_row, axis=1)
+
+    # SALES ORDERS TABLE
+    st.header("📄 Sales Orders")
+    so_df = df[(df["OrderFlag"] == True) & (df["IsCredit"] == False)].copy()
+    credit_df = df[(df["OrderFlag"] == True) & (df["IsCredit"] == True)].copy()
+
+    so_cols = [
+        "Order Ref", "Company", "Branch", "Sales Rep",
+        "Project Name", "MemberId",
+        "Item Code", "Item Name", "Item Qty", "Item Cost", "Item Price",
+        "Internal Comments", "Customer PO No", "ETD", "SKU_Valid"
+    ]
+
+    st.subheader("📝 Sales Order Lines")
+
+    def highlight_invalid_sku(row):
+        if not row.get("SKU_Valid", True):
+            return ["background-color: #ffcccc"] * len(row)
+        return [""] * len(row)
+
+    styled_so = so_df[so_cols].style.apply(highlight_invalid_sku, axis=1)
+    st.dataframe(styled_so, width="stretch")
+
+    so_edit = st.data_editor(so_df[so_cols], num_rows="dynamic", width="stretch")
+
+    invalid_count = (~so_edit["SKU_Valid"]).sum()
+    if invalid_count > 0:
+        st.error(f"⚠️ Cannot push: {invalid_count} invalid SKUs present!")
+
+    if st.button("🚀 Push Sales Orders", key="push_so", disabled=(invalid_count > 0)):
+        results = push_sales_orders(so_edit)
+        for r in results:
+            order_ref = r.get("Order Ref", "UNKNOWN")
+            success = r.get("Success", False)
+            if success:
+                st.success(f"✅ Sales Order {order_ref} processed in Cin7")
+            else:
+                st.error(f"❌ Sales Order {order_ref} failed")
+                st.warning(f"Details: {r.get('Error', r.get('Response', 'Unknown error'))}")
+
+    # CREDIT NOTES TABLE
+    if not credit_df.empty:
+        st.header("💳 Credit Notes")
+        credit_df["Order Ref"] = credit_df["SO_OrderRef"]
+
+        credit_cols = [
+            "Order Ref", "Company", "Branch",
+            "Project Name", "Item Code", "Item Name",
+            "Item Qty", "Item Cost", "Item Price", "Internal Comments", "SKU_Valid"
+        ]
+
+        st.dataframe(credit_df[credit_cols], width="stretch")
+
+        credit_invalid_count = (~credit_df["SKU_Valid"]).sum()
+        if credit_invalid_count > 0:
+            st.error(f"⚠️ Cannot push: {credit_invalid_count} invalid SKUs in credit notes!")
+
+        if st.button("💳 Push Credit Notes", disabled=(credit_invalid_count > 0)):
+            results = push_credit_notes(credit_df[credit_cols])
+            st.subheader("Credit Note Results")
+
+            for r in results:
+                order_ref = r.get("Order Ref", "UNKNOWN")
+                success = r.get("Success", False)
+                raw = r.get("Response", "{}")
+
+                try:
+                    parsed = json.loads(raw)[0]
+                except Exception:
+                    parsed = {}
+
+                errors = parsed.get("errors", []) if isinstance(parsed, dict) else []
+                if success and not errors:
+                    st.success(f"✔ Credit Note for {order_ref} created successfully.")
                 else:
-                    st.warning(f"❌ **{sku}** - Does not exist in database")
-                    invalid_skus.append({"File": fname, "SKU": sku, "Product": row.get("ProductName", row.get("Product Name", ""))})
+                    st.error(f"❌ Credit Note for {order_ref} failed.")
+                    if errors:
+                        for err in errors:
+                            st.warning(f"- {err}")
+                    else:
+                        st.warning(r.get("Error", "No detailed error returned from Cin7."))
