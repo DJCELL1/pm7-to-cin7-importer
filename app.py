@@ -38,10 +38,19 @@ def clean_supplier_name(name: str):
     x = x.replace("LIMITED", "LTD")
     return re.sub(r"[^A-Z0-9]", "", x)
 
-def resolve_branch_from_sales_rep(rep_name: str) -> str:
-    if not rep_name:
+def resolve_branch_from_sales_rep(rep_name) -> str:
+    """
+    Resolve branch from sales rep name.
+    Handles NaN, None, empty strings, and actual string values.
+    """
+    # Handle NaN (float), None, or empty string
+    if pd.isna(rep_name) or not rep_name:
         return "Avondale"
-    return "Hamilton" if rep_name.strip().upper() == "CHARLOTTE MEYER" else "Avondale"
+    
+    # Convert to string and check (handles cases where rep_name might be numeric)
+    rep_name_str = str(rep_name).strip().upper()
+    
+    return "Hamilton" if rep_name_str == "CHARLOTTE MEYER" else "Avondale"
 
 def extract_account_number(raw_account):
     """ProMaster format: Company Name - ACCOUNTCODE Return: ACCOUNTCODE"""
