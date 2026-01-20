@@ -8,13 +8,14 @@ import re
 from difflib import SequenceMatcher
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from hd_theme import apply_hd_theme, metric_card
+from hd_theme import apply_hd_theme, metric_card, add_logo
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(page_title="ProMaster → Cin7 Importer v51", layout="wide")
 apply_hd_theme()
+add_logo(logo_path="Logos-01.jpg", subtitle="ProMaster → Cin7 Importer")
 st.title("🧱 ProMaster → Cin7 Importer v51 — Railway SKU Validation + Manual Override")
 
 # =========================================================

@@ -278,3 +278,43 @@ def badge(text, style="orange"):
         style: Badge style - 'success', 'warning', 'danger', or 'orange' (default)
     """
     return f'<span class="badge badge-{style}">{text}</span>'
+
+
+def add_logo(logo_path=None, text="Hardware Direct", subtitle="ProMaster Importer"):
+    """Add a logo to the sidebar or main area
+
+    Args:
+        logo_path: Path to logo image file (optional). If None, uses text-based logo
+        text: Main logo text
+        subtitle: Subtitle text below logo
+    """
+    if logo_path:
+        st.sidebar.image(logo_path, use_container_width=True)
+    else:
+        # Text-based logo matching Hardware Direct style
+        st.sidebar.markdown(f"""
+        <div style="padding: 1.5rem 0; text-align: center;">
+            <div style="display: inline-flex; align-items: center; gap: 0.5rem;">
+                <div style="
+                    width: 12px;
+                    height: 12px;
+                    background: #F47920;
+                    border-radius: 50%;
+                "></div>
+                <h2 style="
+                    margin: 0;
+                    color: white;
+                    font-size: 1.5rem;
+                    font-weight: 700;
+                    letter-spacing: -0.5px;
+                ">{text}</h2>
+            </div>
+            <p style="
+                margin: 0.5rem 0 0 0;
+                color: #999;
+                font-size: 0.85rem;
+                font-weight: 400;
+            ">{subtitle}</p>
+        </div>
+        <hr style="border-color: #444; margin: 1rem 0;">
+        """, unsafe_allow_html=True)
