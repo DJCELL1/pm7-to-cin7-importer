@@ -8,11 +8,13 @@ import re
 from difflib import SequenceMatcher
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from hd_theme import apply_hd_theme, metric_card
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(page_title="ProMaster → Cin7 Importer v51", layout="wide")
+apply_hd_theme()
 st.title("🧱 ProMaster → Cin7 Importer v51 — Railway SKU Validation + Manual Override")
 
 # =========================================================
@@ -447,10 +449,15 @@ if pm_files:
         st.warning(f"⚠️ SKU list not loaded from DB: {sku_err}")
         valid_skus = set()
     else:
-        st.caption(f"Loaded {len(valid_skus)} SKUs from Railway")
-
-    if st.session_state.manual_overrides:
-        st.info(f"ℹ️ {len(st.session_state.manual_overrides)} manual override(s) active")
+        # Display key metrics in a nice row
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            metric_card("Valid SKUs Loaded", f"{len(valid_skus):,}", "From Railway Database")
+        with col2:
+            metric_card("Manual Overrides", f"{len(st.session_state.manual_overrides)}", "Active SKU overrides")
+        with col3:
+            metric_card("Files Uploaded", f"{len(pm_files)}", "ProMaster CSV files")
+        st.markdown("---")
 
     buffer = []
     invalid_skus = []

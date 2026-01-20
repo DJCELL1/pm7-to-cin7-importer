@@ -1,0 +1,12 @@
+# Hardware Direct Theme Configuration
+# Copy this file to any Streamlit project: .streamlit/config.toml
+
+[theme]
+primaryColor = "#F47920"        # Hardware Direct Orange
+backgroundColor = "#FFFFFF"      # White background
+secondaryBackgroundColor = "#F8F9FA"  # Light gray for cards
+textColor = "#2B2B2B"           # Dark text
+font = "sans serif"
+
+[server]
+headless = true
