@@ -654,8 +654,8 @@ if pm_files:
     if not credit_df.empty:
         st.header("💳 Credit Notes")
         credit_cols = [
-            "Order Ref", "Company", "Branch",
-            "Project Name", "Item Code", "Item Name",
+            "Order Ref", "Company", "Branch", "Sales Rep",
+            "Project Name", "MemberId", "Item Code", "Item Name",
             "Item Qty", "Item Cost", "Item Price", "Internal Comments",
             "SKU_Valid", "SKU_Overridden"
         ]
