@@ -37,7 +37,7 @@ def clean_code(x):
         return ""
     x = str(x).strip().upper()
     x = x.replace("–", "-").replace("—", "-")
-    return re.sub(r"[^A-Z0-9/\\-]", "", x)
+    return re.sub(r"[^A-Z0-9/\\.\-]", "", x)
 
 def clean_supplier_name(name: str):
     if not name:
