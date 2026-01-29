@@ -429,9 +429,6 @@ def push_sales_orders(df):
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_sales_payload(ref, grp)
-            # Debug: log the payload
-            st.write(f"**DEBUG - Payload for {ref}:**")
-            st.json(payload)
             r = requests.post(url, headers=heads, data=json.dumps(payload),
                               auth=HTTPBasicAuth(api_username, api_key), timeout=60)
             results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
