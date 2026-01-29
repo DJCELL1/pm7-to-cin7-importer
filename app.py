@@ -347,7 +347,13 @@ def build_sales_payload(ref, grp):
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
     mem = grp["MemberId"].iloc[0]
-    sales_rep_id = grp["Sales Rep"].iloc[0] or added_by_id
+    sales_rep_raw = grp["Sales Rep"].iloc[0]
+
+    # Convert sales rep name to ID, or use added_by_id as fallback
+    if sales_rep_raw and sales_rep_raw in user_options:
+        sales_rep_id = user_options[sales_rep_raw]
+    else:
+        sales_rep_id = added_by_id
 
     return [{
         "isApproved": False,
@@ -369,9 +375,9 @@ def build_sales_payload(ref, grp):
         "lineItems": [
             {
                 "code": r["Item Code"],
-                "qty": float(r["Item Qty"]),
-                "unitPrice": float(r["Item Price"]),
-                "unitCost": float(r["Item Cost"])
+                "qty": float(r["Item Qty"]) if pd.notna(r["Item Qty"]) else 0.0,
+                "unitPrice": float(r["Item Price"]) if pd.notna(r["Item Price"]) else 0.0,
+                "unitCost": float(r["Item Cost"]) if pd.notna(r["Item Cost"]) else 0.0
             }
             for _, r in grp.iterrows()
         ]
@@ -382,7 +388,13 @@ def build_credit_note_payload(ref, grp):
     branch_id = branch_Hamilton if branch == "Hamilton" else branch_Avondale
 
     mem = grp["MemberId"].iloc[0]
-    sales_rep_id = grp["Sales Rep"].iloc[0] or added_by_id
+    sales_rep_raw = grp["Sales Rep"].iloc[0]
+
+    # Convert sales rep name to ID, or use added_by_id as fallback
+    if sales_rep_raw and sales_rep_raw in user_options:
+        sales_rep_id = user_options[sales_rep_raw]
+    else:
+        sales_rep_id = added_by_id
 
     return [{
         "isApproved": False,
@@ -402,9 +414,9 @@ def build_credit_note_payload(ref, grp):
         "lineItems": [
             {
                 "code": r["Item Code"],
-                "qty": float(r["Item Qty"]),
-                "unitPrice": float(r["Item Price"]),
-                "unitCost": float(r["Item Cost"])
+                "qty": float(r["Item Qty"]) if pd.notna(r["Item Qty"]) else 0.0,
+                "unitPrice": float(r["Item Price"]) if pd.notna(r["Item Price"]) else 0.0,
+                "unitCost": float(r["Item Cost"]) if pd.notna(r["Item Cost"]) else 0.0
             }
             for _, r in grp.iterrows()
         ]
@@ -417,6 +429,9 @@ def push_sales_orders(df):
     for ref, grp in df.groupby("Order Ref"):
         try:
             payload = build_sales_payload(ref, grp)
+            # Debug: log the payload
+            st.write(f"**DEBUG - Payload for {ref}:**")
+            st.json(payload)
             r = requests.post(url, headers=heads, data=json.dumps(payload),
                               auth=HTTPBasicAuth(api_username, api_key), timeout=60)
             results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
@@ -475,7 +490,6 @@ if pm_files:
             fname = file.name
             name_no_ext = re.sub(r"\.csv$", "", fname, flags=re.I)
             order_ref_base = re.sub(r"_ShipmentProductWithCostsAndPrice$", "", name_no_ext, flags=re.I)
-            po_no = order_ref_base.split(".")[0]
 
             st.subheader(f"📄 {fname}")
             comment = st.text_input(f"Internal comment for {order_ref_base}", key=f"c-{order_ref_base}")
@@ -573,7 +587,7 @@ if pm_files:
                     "Sales Rep": r.get("Sales Rep", ""),
                     "MemberId": r.get("MemberId", None),
                     "Internal Comments": comment,
-                    "Customer PO No": po_no,
+                    "Customer PO No": order_ref_base,
                     "ETD": etd.strftime("%Y-%m-%d"),
                     "Order Ref": so_ref,
                     "Item Code": item_code,
