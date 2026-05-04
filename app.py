@@ -98,11 +98,11 @@ branch_Avondale = cin7.get("branch_Avondale", 3)
 branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
-def cin7_get(endpoint, params=None, retries=3):
+def cin7_get(endpoint, params=None, retries=2, timeout=15):
     url = f"{base_url}/{endpoint}"
     for attempt in range(retries):
         try:
-            r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key), timeout=60)
+            r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key), timeout=timeout)
             if r.status_code == 200:
                 return r.json()
             return None
@@ -206,7 +206,8 @@ def get_users_map():
                 out[int(u["id"])] = name
     return out
 
-users_map = get_users_map()
+with st.spinner("Loading Cin7 users..."):
+    users_map = get_users_map()
 user_options = {v: k for k, v in users_map.items()}
 
 st.sidebar.header("👤 Added By (Cin7 Staff)")
