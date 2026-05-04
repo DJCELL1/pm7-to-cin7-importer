@@ -106,11 +106,11 @@ def cin7_get(endpoint, params=None, retries=3):
             if r.status_code == 200:
                 return r.json()
             return None
-        except requests.exceptions.Timeout:
+        except requests.exceptions.RequestException:
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
-                raise
+                return None
 
 # =========================================================
 # RAILWAY DB CONNECTION
