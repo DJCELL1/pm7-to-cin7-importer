@@ -5,6 +5,7 @@ from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
 import json
 import re
+import time
 from difflib import SequenceMatcher
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -97,12 +98,19 @@ branch_Avondale = cin7.get("branch_Avondale", 3)
 branch_Hamilton_default_member = 230
 branch_Avondale_default_member = 3
 
-def cin7_get(endpoint, params=None):
+def cin7_get(endpoint, params=None, retries=3):
     url = f"{base_url}/{endpoint}"
-    r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key), timeout=30)
-    if r.status_code == 200:
-        return r.json()
-    return None
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, auth=HTTPBasicAuth(api_username, api_key), timeout=60)
+            if r.status_code == 200:
+                return r.json()
+            return None
+        except requests.exceptions.Timeout:
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
 
 # =========================================================
 # RAILWAY DB CONNECTION
