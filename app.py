@@ -560,12 +560,21 @@ if pm_files:
             proj_map, rep_map, mem_map, company_map = {}, {}, {}, {}
             if acct_col:
                 accounts = pm[acct_col].dropna().unique()
+                cin7_lookup_ok = True
                 for acc in accounts:
-                    d = get_contact_data(acc)
-                    proj_map[acc] = d["projectName"]
-                    rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
-                    mem_map[acc] = d["memberId"]
-                    company_map[acc] = d["company"]
+                    try:
+                        d = get_contact_data(acc)
+                        proj_map[acc] = d["projectName"]
+                        rep_map[acc] = users_map.get(d["salesPersonId"], "") if d["salesPersonId"] else ""
+                        mem_map[acc] = d["memberId"]
+                        company_map[acc] = d["company"]
+                    except Exception as lookup_err:
+                        cin7_lookup_ok = False
+                        proj_map[acc] = ""
+                        rep_map[acc] = ""
+                        mem_map[acc] = None
+                        company_map[acc] = extract_company_name(acc)
+                        st.warning(f"⚠️ Cin7 contact lookup failed for `{acc}`: {type(lookup_err).__name__}: {lookup_err}")
 
                 pm["Project Name"] = pm[acct_col].map(proj_map)
                 pm["Sales Rep"] = pm[acct_col].map(rep_map)
