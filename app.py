@@ -275,6 +275,23 @@ if conn:
 else:
     st.sidebar.error(f"❌ Not Connected: {db_err}")
 
+st.sidebar.header("🔌 Cin7 API")
+try:
+    _ping = requests.get(
+        f"{base_url}/v1/Users",
+        auth=HTTPBasicAuth(api_username, api_key),
+        timeout=8,
+        params={"rows": 1}
+    )
+    if _ping.status_code == 200:
+        st.sidebar.success("✅ Cin7 API reachable")
+    else:
+        st.sidebar.warning(f"⚠️ Cin7 API replied {_ping.status_code}")
+except requests.exceptions.Timeout:
+    st.sidebar.error("❌ Cin7 API timed out (>8s)")
+except requests.exceptions.RequestException as e:
+    st.sidebar.error(f"❌ Cin7 API error: {type(e).__name__}")
+
 # =========================================================
 # SUBSTITUTIONS
 # =========================================================
