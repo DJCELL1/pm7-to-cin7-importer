@@ -471,7 +471,25 @@ def push_credit_notes(df):
             payload = build_credit_note_payload(ref, grp)
             r = requests.post(url, headers=heads, data=json.dumps(payload),
                               auth=HTTPBasicAuth(api_username, api_key), timeout=60)
-            results.append({"Order Ref": ref, "Success": r.status_code == 200, "Response": r.text})
+            success = False
+            error_detail = None
+            if r.status_code == 200:
+                try:
+                    body = r.json()
+                    items = body if isinstance(body, list) else [body]
+                    failures = [
+                        "; ".join(item.get("errors", []))
+                        for item in items
+                        if not item.get("success", True)
+                    ]
+                    if failures:
+                        error_detail = " | ".join(failures)
+                    else:
+                        success = True
+                except Exception:
+                    success = True  # can't parse body, assume ok
+            results.append({"Order Ref": ref, "Success": success,
+                             "Response": error_detail or r.text})
         except Exception as e:
             results.append({"Order Ref": ref, "Success": False, "Error": f"{type(e).__name__}: {e}"})
     return results
